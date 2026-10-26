@@ -173,18 +173,24 @@ jobs:
           name: packages
           path: out
 
+      # No registry-url: with it, setup-node writes a placeholder token to .npmrc that npm would send on
+      # every request. npm's default registry is npmjs and trusted publishing needs no .npmrc.
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
-      # Trusted publishing needs npm 11.5.1 or later.
-      - run: npm install -g npm@^11.5.1
+      # Trusted publishing needs npm 11.5.1 or later, `npm stage publish` 11.15.0 or later.
+      - run: npm install -g npm@^11.15.0
 
+      # A package with a release on npm publishes with trusted publishing (OIDC); no npm token is used. Each
+      # package needs a trusted publisher on npmjs.com (user sameernair1993, repository krepis, workflow
+      # release.yml).
+      # A package with no release yet cannot have a trusted publisher, so its first version is staged with the
+      # NPM_TOKEN secret (`npm stage publish` accepts any granular token) and goes live once a maintainer
+      # approves it with 2FA on npmjs.com. NPM_TOKEN is not needed after that.
       - name: Publish
         env:
-          # Optional once trusted publishing is configured on npmjs.com; needed for the very first publish.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_STAGE_TOKEN: ${{ secrets.NPM_TOKEN }}
           # Provenance requires a public repository.
           NPM_CONFIG_PROVENANCE: ${{ github.event.repository.private == false }}
           VERSION: ${{ needs.pack.outputs.version }}
@@ -193,17 +199,47 @@ jobs:
         run: |
           flags="--access public --tag $DIST_TAG"
           [ "$DRY_RUN" = "true" ] && flags="$flags --dry-run"
+          stage_auth=""
+          if [ -n "$NPM_STAGE_TOKEN" ]; then
+            # npm expands ${NPM_STAGE_TOKEN} when it reads the file, so the token itself is not written to disk.
+            printf '//registry.npmjs.org/:_authToken=${NPM_STAGE_TOKEN}\n' > "$RUNNER_TEMP/stage.npmrc"
+            stage_auth="--userconfig $RUNNER_TEMP/stage.npmrc"
+          fi
+          : > "$RUNNER_TEMP/staged"
+          # Number of versions of $1 on npm, not counting the 0.0.0-stage placeholder that staging a new package creates.
+          released() {
+            npm view "$1" versions --json 2>/dev/null | node -e '
+              let s = ""; process.stdin.on("data", d => (s += d)).on("end", () => {
+                let v; try { v = [].concat(JSON.parse(s)) } catch { v = [] }
+                console.log(v.filter(x => typeof x === "string" && x !== "0.0.0-stage").length)
+              })'
+          }
           # krepis first: krepis-kit depends on it.
           for base in krepis krepis-kit; do
             name="@$NPM_SCOPE/$base"
+            # ./ is required: npm reads a bare `out/x.tgz` as the GitHub shorthand `owner/repo`.
+            tgz="./out/$NPM_SCOPE-$base-$VERSION.tgz"
             if [ "$DRY_RUN" != "true" ] && npm view "$name@$VERSION" version >/dev/null 2>&1; then
               echo "$name@$VERSION is already on npm; skipping"; continue
             fi
-            if [ "$DRY_RUN" != "true" ] && [ -z "$NODE_AUTH_TOKEN" ] && ! npm view "$name" name >/dev/null 2>&1; then
-              echo "::error::$name is not on npm yet. The first publish needs the NPM_TOKEN secret; a trusted publisher can only be added once the package exists."; exit 1
+            if [ "$(released "$name")" != "0" ]; then
+              npm publish "$tgz" $flags
+              continue
             fi
-            # ./ is required: npm reads a bare `out/x.tgz` as the GitHub shorthand `owner/repo`.
-            npm publish "./out/$NPM_SCOPE-$base-$VERSION.tgz" $flags
+            if [ "$DRY_RUN" != "true" ]; then
+              if [ -z "$stage_auth" ]; then
+                echo "::error::$name has no release on npm yet. Its first version is staged with the NPM_TOKEN secret (a granular access token with read and write access to the package or scope)"; exit 1
+              fi
+              if npm stage list "$name" $stage_auth 2>/dev/null | grep -qF "$VERSION"; then
+                echo "::notice::$name@$VERSION is already staged; approve it on npmjs.com"
+                echo "$name" >> "$RUNNER_TEMP/staged"; continue
+              fi
+            fi
+            npm stage publish "$tgz" $flags $stage_auth
+            if [ "$DRY_RUN" != "true" ]; then
+              echo "$name" >> "$RUNNER_TEMP/staged"
+              echo "::notice::$name@$VERSION is staged. Approve it with 2FA on npmjs.com (Staged Packages), then add a trusted publisher for $name."
+            fi
           done
 
       - name: Verify on npm
@@ -215,6 +251,9 @@ jobs:
         run: |
           for base in krepis krepis-kit; do
             name="@$NPM_SCOPE/$base"
+            if grep -qxF "$name" "$RUNNER_TEMP/staged" 2>/dev/null; then
+              echo "$name@$VERSION is staged and goes live once it is approved"; continue
+            fi
             for i in $(seq 1 30); do
               npm view "$name@$VERSION" version --prefer-online >/dev/null 2>&1 && { echo "$name@$VERSION is on npm"; continue 2; }
               sleep 20
