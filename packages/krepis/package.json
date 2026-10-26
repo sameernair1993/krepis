@@ -1,0 +1,100 @@
+{
+  "name": "@sameernair/krepis",
+  "version": "0.1.0-alpha.3",
+  "description": "Typed data access layer for MongoDB on Node.js, with safe defaults and connection helpers",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sameernair1993/krepis.git",
+    "directory": "packages/krepis"
+  },
+  "homepage": "https://github.com/sameernair1993/krepis#readme",
+  "bugs": "https://github.com/sameernair1993/krepis/issues",
+  "keywords": [
+    "mongodb",
+    "odm",
+    "typescript",
+    "mongoose",
+    "connection-pool"
+  ],
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "types": "./dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "krepis-source": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./connections": {
+      "krepis-source": "./src/connections/index.ts",
+      "import": {
+        "types": "./dist/connections/index.d.ts",
+        "default": "./dist/connections/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/connections/index.d.ts",
+        "default": "./dist/cjs/connections/index.js"
+      }
+    },
+    "./compat": {
+      "krepis-source": "./src/compat/index.ts",
+      "import": {
+        "types": "./dist/compat/index.d.ts",
+        "default": "./dist/compat/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/compat/index.d.ts",
+        "default": "./dist/cjs/compat/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "connections": [
+        "./dist/cjs/connections/index.d.ts"
+      ],
+      "compat": [
+        "./dist/cjs/compat/index.d.ts"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-package.mjs",
+    "prepack": "npm run build",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "check:dist": "npm run build && node --test test/dist.check.ts",
+    "check:package": "npx -y @arethetypeswrong/cli --pack . --ignore-rules cjs-resolves-to-esm"
+  },
+  "peerDependencies": {
+    "mongodb": ">=4.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "mongodb": "^7.7.0",
+    "mongodb-next": "npm:mongodb@7.7.0-dev.20261007.sha.df513cfa",
+    "mongodb-v4": "npm:mongodb@4.17.2",
+    "mongodb-v5": "npm:mongodb@5.9.2",
+    "mongodb-v6": "npm:mongodb@6.0.0",
+    "mongodb-v6-latest": "npm:mongodb@6.21.0",
+    "mongoose": "^9.10.4",
+    "mongoose-v6": "npm:mongoose@^6.13.11",
+    "mongoose-v7": "npm:mongoose@^7.8.12",
+    "mongoose-v8": "npm:mongoose@^8.24.5",
+    "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

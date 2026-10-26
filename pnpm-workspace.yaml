@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+
+# Dev-only security patches (nothing here ships in krepis or krepis-kit).
+overrides:
+  body-parser@>=2.0.0 <2.4.0: ^2.4.0
+  vite@<6.4.4: ^6.4.5

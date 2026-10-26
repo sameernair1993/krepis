@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "module": "commonjs",
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "rootDir": "src",
+    "outDir": "dist/cjs",
+    "customConditions": []
+  },
+  "include": [],
+  "files": [
+    "src/drill/index.ts"
+  ]
+}

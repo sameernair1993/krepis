@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "module": "commonjs",
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "rootDir": "src",
+    "outDir": "dist/cjs"
+  },
+  "include": [],
+  "files": [
+    "src/index.ts",
+    "src/connections/index.ts",
+    "src/compat/index.ts"
+  ]
+}

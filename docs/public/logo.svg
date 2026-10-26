@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Krepis">
+  <title>Krepis</title>
+  <!-- A database resting on a krepis: the three stone steps a Greek temple stands on. -->
+  <defs>
+    <linearGradient id="kr-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#0f5f59"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#kr-bg)"/>
+  <!-- database -->
+  <path d="M22 14.5v14.5c0 2.2 4.5 4 10 4s10-1.8 10-4V14.5" fill="#ccfbf1"/>
+  <path d="M22 21.5c0 2.2 4.5 4 10 4s10-1.8 10-4" fill="none" stroke="#0f766e" stroke-width="1.6" stroke-linecap="round"/>
+  <ellipse cx="32" cy="14.5" rx="10" ry="4" fill="#ffffff"/>
+  <!-- the three steps -->
+  <rect x="18" y="35.5" width="28" height="5.5" rx="1" fill="#ffffff"/>
+  <rect x="13" y="42.5" width="38" height="5.5" rx="1" fill="#ffffff" fill-opacity="0.85"/>
+  <rect x="8" y="49.5" width="48" height="5.5" rx="1" fill="#ffffff" fill-opacity="0.7"/>
+</svg>

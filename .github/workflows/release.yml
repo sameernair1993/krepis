@@ -1,0 +1,292 @@
+name: CI and release
+
+# Every push to main runs CI. If CI passes and a published file changed since the latest vX.Y.Z tag, this picks
+# the next version, publishes @sameernair/krepis and @sameernair/krepis-kit to npmjs and `@<owner>/krepis`,
+# `@<owner>/krepis-kit` to GitHub Packages (which accepts only names scoped to the repository owner), then tags
+# the commit vX.Y.Z.
+#
+# The version comes from git tags, not from a manual edit:
+# - by default, the next one after the latest tag: 0.1.0-alpha.2 -> 0.1.0-alpha.3, 0.1.0 -> 0.1.1;
+# - set both package.json versions higher (0.1.0, 0.2.0-beta.0, 1.0.0) to choose a milestone; that version is used.
+# The pipeline does not commit the version back, so package.json can lag behind npm; the tags are the record.
+# Only changes to what ships (package sources, package.json, README, LICENSE, the build script) release; tests,
+# benchmarks, docs and CI changes do not.
+# A prerelease (0.1.0-alpha.1) is published under the dist-tag `alpha` (its first identifier), otherwise `latest`.
+# The tag is created last, so a failed publish is retried by the next push to main (versions already on a registry
+# are skipped). A tag pushed with GITHUB_TOKEN does not start another run.
+#
+# Manual runs default to a dry run. Unticked, a manual run on main publishes the same way a push does.
+# The workflow file name is part of the npm trusted publisher configuration; keep it release.yml.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Pack and run `npm publish --dry-run` only
+        type: boolean
+        default: true
+      targets:
+        description: Registries to publish to
+        type: choice
+        options: [both, npm, github]
+        default: both
+
+permissions:
+  contents: read
+
+env:
+  # npm rejects the unscoped `krepis` as too close to `redis`, so both packages are scoped on npm.
+  # pnpm packs `@sameernair/krepis` as `sameernair-krepis-<version>.tgz`.
+  NPM_SCOPE: sameernair
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # Runs alongside CI: decides whether this commit is a release.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.meta.outputs.release }}
+      version: ${{ steps.meta.outputs.version }}
+      dist_tag: ${{ steps.meta.outputs.dist_tag }}
+      dry_run: ${{ steps.meta.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # all tags, and the history to diff against the latest one
+
+      - name: Decide
+        id: meta
+        env:
+          # Only a manual run has the dry_run input.
+          INPUT_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          core=$(node -p "require('./packages/krepis/package.json').version")
+          kit=$(node -p "require('./packages/kit/package.json').version")
+          if [ "$core" != "$kit" ]; then
+            echo "::error::krepis is $core but krepis-kit is $kit; keep them at the same version"; exit 1
+          fi
+          semver() { npx -y semver@7 "$@"; }
+          tags=$(git tag -l 'v*' | sed 's/^v//')
+          # semver prints its valid arguments in ascending order, and ignores the rest.
+          latest=""
+          [ -n "$tags" ] && latest=$(semver $tags | tail -1 || true)
+          # Everything that ends up in a tarball. In a pathspec, * also matches /.
+          shipped=(packages/krepis packages/kit LICENSE scripts/build-package.mjs
+            ':!packages/*/test/*' ':!packages/*/bench/*' ':!packages/kit/examples/*')
+
+          if [ "$core" = "0.0.0" ]; then
+            release=false; version=$core; why="0.0.0 is the unreleased placeholder"
+          elif [ -z "$latest" ]; then
+            release=true; version=$core; why="first release"
+          elif [ "$core" != "$latest" ] && [ "$(semver "$latest" "$core" | tail -1)" = "$core" ]; then
+            release=true; version=$core; why="package.json sets $core"
+          else
+            case "$latest" in *-*) inc=prerelease ;; *) inc=patch ;; esac
+            version=$(semver -i "$inc" "$latest")
+            if git diff --quiet "v$latest" HEAD -- "${shipped[@]}"; then
+              release=false; why="no published file changed since v$latest"
+            else
+              release=true; why="published files changed since v$latest"
+            fi
+          fi
+
+          dry=false
+          if [ "$INPUT_DRY_RUN" = "true" ]; then release=true; dry=true; why="dry run requested"
+          elif [ "$release" = "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then dry=true; why="releases publish only from main"
+          fi
+
+          pre=$(node -p "('$version'.split('-')[1] ?? '').split('.')[0]")
+          {
+            echo "release=$release"; echo "version=$version"; echo "dist_tag=${pre:-latest}"; echo "dry_run=$dry"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$release" != "true" ]; then echo "::notice::No release: $why."
+          elif [ "$dry" = "true" ]; then echo "::warning::Dry run ($why): $version is packed and checked, nothing is published or tagged."
+          else echo "::notice::Releasing $version ($why) under dist-tag ${pre:-latest}, then tagging v$version."
+          fi
+
+  pack:
+    needs: [ci, plan]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ needs.plan.outputs.version }}
+      dist_tag: ${{ needs.plan.outputs.dist_tag }}
+      dry_run: ${{ needs.plan.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # pnpm, not npm: it rewrites kit's `workspace:^` dependency to a real range, and adds the root
+      # LICENSE to each tarball. prepack builds. The version is set here, before packing, so kit's dependency
+      # range follows it; it is not committed.
+      - name: Pack
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          (cd packages/krepis && npm pkg set version="$VERSION")
+          (cd packages/kit && npm pkg set version="$VERSION")
+          mkdir -p out
+          (cd packages/krepis && pnpm pack --pack-destination ../../out)
+          (cd packages/kit && pnpm pack --pack-destination ../../out)
+          ls -l out
+          for f in out/*.tgz; do
+            tar -xzOf "$f" package/package.json | node -e "
+              const p = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+              const left = Object.entries(p.dependencies ?? {}).filter(([, r]) => String(r).startsWith('workspace:'));
+              if (left.length) { console.error(p.name + ': workspace: range left in ' + left.map(([n]) => n)); process.exit(1); }"
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: out/*.tgz
+          if-no-files-found: error
+
+  npm:
+    needs: pack
+    if: inputs.targets != 'github'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: out
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@^11.5.1
+
+      - name: Publish
+        env:
+          # Optional once trusted publishing is configured on npmjs.com; needed for the very first publish.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Provenance requires a public repository.
+          NPM_CONFIG_PROVENANCE: ${{ github.event.repository.private == false }}
+          VERSION: ${{ needs.pack.outputs.version }}
+          DIST_TAG: ${{ needs.pack.outputs.dist_tag }}
+          DRY_RUN: ${{ needs.pack.outputs.dry_run }}
+        run: |
+          flags="--access public --tag $DIST_TAG"
+          [ "$DRY_RUN" = "true" ] && flags="$flags --dry-run"
+          # krepis first: krepis-kit depends on it.
+          for base in krepis krepis-kit; do
+            name="@$NPM_SCOPE/$base"
+            if [ "$DRY_RUN" != "true" ] && npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "$name@$VERSION is already on npm; skipping"; continue
+            fi
+            if [ "$DRY_RUN" != "true" ] && [ -z "$NODE_AUTH_TOKEN" ] && ! npm view "$name" name >/dev/null 2>&1; then
+              echo "::error::$name is not on npm yet. The first publish needs the NPM_TOKEN secret; a trusted publisher can only be added once the package exists."; exit 1
+            fi
+            # ./ is required: npm reads a bare `out/x.tgz` as the GitHub shorthand `owner/repo`.
+            npm publish "./out/$NPM_SCOPE-$base-$VERSION.tgz" $flags
+          done
+
+      - name: Verify on npm
+        if: needs.pack.outputs.dry_run != 'true'
+        env:
+          VERSION: ${{ needs.pack.outputs.version }}
+        # npm publish exiting 0 means the registry accepted the package; a new package can then
+        # sit in "being processed" for several minutes. A slow index is a warning, not a failed release.
+        run: |
+          for base in krepis krepis-kit; do
+            name="@$NPM_SCOPE/$base"
+            for i in $(seq 1 30); do
+              npm view "$name@$VERSION" version --prefer-online >/dev/null 2>&1 && { echo "$name@$VERSION is on npm"; continue 2; }
+              sleep 20
+            done
+            echo "::warning::$name@$VERSION was accepted by npm but is not visible after 10 minutes; npm is still processing it. Check https://www.npmjs.com/package/$name"
+          done
+          npm view "@$NPM_SCOPE/krepis" dist-tags --prefer-online || true
+
+  github:
+    needs: pack
+    if: inputs.targets != 'npm'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: out
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: '@${{ github.repository_owner }}'
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.pack.outputs.version }}
+          DIST_TAG: ${{ needs.pack.outputs.dist_tag }}
+          DRY_RUN: ${{ needs.pack.outputs.dry_run }}
+        run: |
+          scope="@${GITHUB_REPOSITORY_OWNER,,}"
+          flags="--tag $DIST_TAG --ignore-scripts"
+          [ "$DRY_RUN" = "true" ] && flags="$flags --dry-run"
+          for base in krepis krepis-kit; do
+            dir="gh/$base"
+            mkdir -p "$dir"
+            tar -xzf "out/$NPM_SCOPE-$base-$VERSION.tgz" -C "$dir"
+            node scripts/retarget-package.mjs "$dir/package" "$scope"
+            if [ "$DRY_RUN" != "true" ] && npm view "$scope/$base@$VERSION" version >/dev/null 2>&1; then
+              echo "$scope/$base@$VERSION is already on GitHub Packages; skipping"; continue
+            fi
+            # Repack and publish the tarball: publishing the directory makes npm drop kit's bins as "invalid".
+            tar -czf "$dir.tgz" -C "$dir" package
+            npm publish "./$dir.tgz" $flags
+          done
+
+  # Last, so a failed publish leaves no tag and the next push to main retries it. A partial manual release
+  # (targets npm or github) is not tagged either.
+  tag:
+    needs: [plan, npm, github]
+    if: >-
+      !cancelled() && !failure()
+      && needs.plan.outputs.release == 'true' && needs.plan.outputs.dry_run != 'true'
+      && (github.event_name == 'push' || inputs.targets == 'both')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create tag
+        env:
+          TAG: v${{ needs.plan.outputs.version }}
+        run: |
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+          echo "::notice::Tagged $GITHUB_SHA as $TAG"

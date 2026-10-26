@@ -1,0 +1,84 @@
+{
+  "name": "@sameernair/krepis-kit",
+  "version": "0.1.0-alpha.3",
+  "description": "N+1 query analysis and connection incident drills for MongoDB on Node.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sameernair1993/krepis.git",
+    "directory": "packages/kit"
+  },
+  "homepage": "https://github.com/sameernair1993/krepis#readme",
+  "bugs": "https://github.com/sameernair1993/krepis/issues",
+  "keywords": [
+    "mongodb",
+    "n+1",
+    "query-analysis",
+    "mongoose",
+    "apm"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./drill": {
+      "import": {
+        "types": "./dist/drill/index.d.ts",
+        "default": "./dist/drill/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/drill/index.d.ts",
+        "default": "./dist/cjs/drill/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "drill": [
+        "./dist/cjs/drill/index.d.ts"
+      ]
+    }
+  },
+  "bin": {
+    "krepis": "./dist/cli.js",
+    "krepis-kit": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-package.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "node ../../scripts/require-pnpm.mjs",
+    "test": "node --conditions=krepis-source --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "check:dist": "npm run build --prefix ../krepis && npm run build && node --test test/dist.check.ts",
+    "check:package": "npx -y @arethetypeswrong/cli --pack . --ignore-rules cjs-resolves-to-esm"
+  },
+  "dependencies": {
+    "@sameernair/krepis": "workspace:^"
+  },
+  "peerDependencies": {
+    "mongodb": ">=4.17.0"
+  },
+  "devDependencies": {
+    "@apollo/server": "^5.5.1",
+    "@types/node": "^26.6.4",
+    "dataloader": "^2.2.3",
+    "graphql": "^16.14.2",
+    "mongodb": "^7.7.0",
+    "mongodb-v4": "npm:mongodb@4.17.2",
+    "mongodb-v5": "npm:mongodb@5.9.2",
+    "mongodb-v6": "npm:mongodb@6.0.0",
+    "mongoose": "^9.10.4",
+    "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

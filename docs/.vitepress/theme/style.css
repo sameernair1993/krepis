@@ -1,0 +1,275 @@
+/* ---------- Brand ---------- */
+
+:root {
+  --vp-c-brand-1: #0f766e;
+  --vp-c-brand-2: #0d9488;
+  --vp-c-brand-3: #14b8a6;
+  --vp-c-brand-soft: rgba(20, 184, 166, 0.14);
+
+  --vp-button-brand-bg: #0f766e;
+  --vp-button-brand-hover-bg: #115e59;
+  --vp-button-brand-active-bg: #134e4a;
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #0f766e 20%, #14b8a6 80%);
+
+  --kr-glow: rgba(20, 184, 166, 0.16);
+  --kr-card-bg: var(--vp-c-bg-soft);
+  --kr-card-border: var(--vp-c-divider);
+}
+
+.dark {
+  --vp-c-brand-1: #2dd4bf;
+  --vp-c-brand-2: #14b8a6;
+  --vp-c-brand-3: #0d9488;
+  --vp-c-brand-soft: rgba(45, 212, 191, 0.14);
+
+  --vp-button-brand-text: #04201d;
+  --vp-button-brand-bg: #2dd4bf;
+  --vp-button-brand-hover-bg: #5eead4;
+  --vp-button-brand-hover-text: #04201d;
+  --vp-button-brand-active-bg: #99f6e4;
+  --vp-button-brand-active-text: #04201d;
+
+  --vp-home-hero-name-background: linear-gradient(120deg, #2dd4bf 20%, #99f6e4 80%);
+
+  --kr-glow: rgba(45, 212, 191, 0.12);
+}
+
+/* ---------- Home: background ---------- */
+
+.VPHome {
+  background:
+    radial-gradient(900px 420px at 78% 0%, var(--kr-glow), transparent 70%),
+    radial-gradient(700px 360px at 10% 10%, var(--kr-glow), transparent 70%);
+  background-repeat: no-repeat;
+}
+
+/* ---------- Home: hero ---------- */
+
+.VPHome .VPHero .name {
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.VPHome .VPHero .text {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.VPHome .VPHero .tagline {
+  color: var(--vp-c-text-2);
+}
+
+.kr-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding: 4px 12px;
+  border: 1px solid var(--kr-card-border);
+  border-radius: 999px;
+  background: var(--vp-c-bg-soft);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--vp-c-text-2);
+}
+
+.kr-pill::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+.VPHome .VPHero.has-image .kr-pill {
+  display: flex;
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* The code example only appears beside the text on wide screens; below that it is in the page body. */
+.VPHome .VPHero .image {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  .VPHome .VPHero.has-image .kr-pill {
+    margin-left: 0;
+  }
+
+  .VPHome .VPHero .image {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .VPHome .VPHero .image-container {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    width: 100%;
+    height: auto;
+    transform: none;
+  }
+
+  .VPHome .VPHero .image-bg {
+    display: none;
+  }
+}
+
+/* ---------- Home: features ---------- */
+
+.VPHome .VPFeature {
+  border: 1px solid var(--kr-card-border);
+  background: var(--kr-card-bg);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.VPHome .VPFeature:hover {
+  border-color: var(--vp-c-brand-3);
+}
+
+.VPHome .VPFeature .icon {
+  border-radius: 10px;
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+}
+
+.VPHome .VPFeature .icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ---------- Home: sections below the features ---------- */
+
+.VPHome .vp-doc .kr-section {
+  margin: 96px auto 0;
+  max-width: 1152px;
+}
+
+.VPHome .vp-doc .kr-section h2 {
+  margin: 0 0 8px;
+  padding: 0;
+  border-top: none;
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+
+.VPHome .vp-doc .kr-lead {
+  margin: 0 0 28px;
+  max-width: 680px;
+  color: var(--vp-c-text-2);
+}
+
+.kr-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 768px) {
+  .kr-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.kr-card {
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  border: 1px solid var(--kr-card-border);
+  border-radius: 12px;
+  background: var(--kr-card-bg);
+}
+
+.VPHome .vp-doc .kr-card h3 {
+  margin: 0 0 4px;
+  font-family: var(--vp-font-family-mono);
+  font-size: 18px;
+}
+
+.VPHome .vp-doc .kr-card .kr-role {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+}
+
+.VPHome .vp-doc .kr-card p {
+  margin: 0 0 12px;
+  color: var(--vp-c-text-2);
+}
+
+.VPHome .vp-doc .kr-card ul {
+  margin: 0 0 16px;
+  padding-left: 18px;
+  color: var(--vp-c-text-2);
+}
+
+.VPHome .vp-doc .kr-card li + li {
+  margin-top: 4px;
+}
+
+.VPHome .vp-doc .kr-card .kr-more {
+  margin-top: auto;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.kr-status {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 768px) {
+  .kr-status {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.VPHome .vp-doc .kr-status h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.kr-status .kr-card.is-done {
+  border-top: 3px solid #10b981;
+}
+
+.kr-status .kr-card.is-next {
+  border-top: 3px solid #f59e0b;
+}
+
+.kr-status .kr-card.is-design {
+  border-top: 3px solid var(--vp-c-text-3);
+}
+
+.kr-name {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.kr-name img {
+  width: 56px;
+  height: 56px;
+}
+
+.VPHome .vp-doc .kr-name p {
+  margin: 0;
+  max-width: 560px;
+  color: var(--vp-c-text-2);
+}
+
+/* ---------- Docs pages ---------- */
+
+.vp-doc blockquote {
+  border-left-color: var(--vp-c-brand-3);
+}

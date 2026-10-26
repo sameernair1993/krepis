@@ -1,0 +1,21 @@
+{
+  "name": "krepis-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "typecheck": "pnpm -r typecheck",
+    "check:dist": "pnpm -r --workspace-concurrency=1 check:dist",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "devDependencies": {
+    "github-slugger": "^2.0.0",
+    "vitepress": "^1.6.4"
+  }
+}

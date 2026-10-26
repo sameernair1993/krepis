@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tgz
+.packs/
+packages/krepis/bench/.stress/
+.history
+docs/.vitepress/dist/
+docs/.vitepress/cache/

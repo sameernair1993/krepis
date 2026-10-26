@@ -1,0 +1,76 @@
+name: CI
+
+# Pull requests run here directly. Pushes to main run this through release.yml, which releases after it passes.
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KREPIS_TEST_URI: mongodb://127.0.0.1:27018/?directConnection=true
+      # Throwaway credentials for a CI-only container; not a secret.
+      KREPIS_AUTH_URI: mongodb://root:rootpw@127.0.0.1:27019/?authSource=admin
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The suite's replica set (CONTRIBUTING → Testing rules) and the auth + rate-limited server for the connection tests.
+      - name: Start MongoDB
+        run: |
+          docker run -d --name krepis-mongo -p 27018:27018 mongo:8.0 \
+            --replSet rs0 --port 27018 --setParameter enableTestCommands=1
+          docker run -d --name krepis-mongo-auth -p 27019:27017 \
+            -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=rootpw mongo:8.0 \
+            --setParameter ingressConnectionEstablishmentRateLimiterEnabled=true \
+            --setParameter ingressConnectionEstablishmentRatePerSec=15 \
+            --setParameter ingressConnectionEstablishmentBurstCapacitySecs=1 \
+            --setParameter ingressConnectionEstablishmentMaxQueueDepth=30
+          for i in $(seq 1 60); do
+            docker exec krepis-mongo mongosh --port 27018 --quiet --eval 'db.runCommand({ ping: 1 })' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec krepis-mongo mongosh --port 27018 --quiet \
+            --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27018" }] })'
+          for i in $(seq 1 60); do
+            docker exec krepis-mongo mongosh --port 27018 --quiet --eval 'db.hello().isWritablePrimary' | grep -q true && break
+            sleep 1
+          done
+          for i in $(seq 1 60); do
+            docker exec krepis-mongo-auth mongosh -u root -p rootpw --quiet --eval 'db.runCommand({ ping: 1 })' >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+      # Build first: each package's test/dist.check.ts imports the built package, so typecheck needs dist/.
+      - run: pnpm build
+
+      - run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build and check the packages
+        run: |
+          pnpm --filter @sameernair/krepis check:dist
+          pnpm --filter @sameernair/krepis-kit check:dist
+          pnpm --filter @sameernair/krepis check:package
+          pnpm --filter @sameernair/krepis-kit check:package
