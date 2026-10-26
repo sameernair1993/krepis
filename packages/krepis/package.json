@@ -1,6 +1,6 @@
 {
   "name": "@sameernair/krepis",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "Typed data access layer for MongoDB on Node.js, with safe defaults and connection helpers",
   "license": "MIT",
   "repository": {

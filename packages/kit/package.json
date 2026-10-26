@@ -1,6 +1,6 @@
 {
   "name": "@sameernair/krepis-kit",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "N+1 query analysis and connection incident drills for MongoDB on Node.js",
   "license": "MIT",
   "repository": {

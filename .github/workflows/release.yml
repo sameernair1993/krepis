@@ -12,6 +12,7 @@ name: CI and release
 # Only changes to what ships (package sources, package.json, README, LICENSE, the build script) release; tests,
 # benchmarks, docs and CI changes do not.
 # A prerelease (0.1.0-alpha.1) is published under the dist-tag `alpha` (its first identifier), otherwise `latest`.
+# Until there is a stable release, the npm-latest job also points `latest` at the newest prerelease.
 # The tag is created last, so a failed publish is retried by the next push to main (versions already on a registry
 # are skipped). A tag pushed with GITHUB_TOKEN does not start another run.
 #
@@ -261,6 +262,48 @@ jobs:
             echo "::warning::$name@$VERSION was accepted by npm but is not visible after 10 minutes; npm is still processing it. Check https://www.npmjs.com/package/$name"
           done
           npm view "@$NPM_SCOPE/krepis" dist-tags --prefer-online || true
+
+  # npm search, the package page and a bare `npm install` use the `latest` dist-tag. Prereleases publish under
+  # their own tag (alpha), and staging a new package points `latest` at the 0.0.0-stage placeholder, so until
+  # there is a stable release this points `latest` at the newest version. Runs on every push to main, so a
+  # version approved after its run is picked up by the next one. Needs "Allow npm dist-tag" on each package's
+  # trusted publisher.
+  npm-latest:
+    needs: [plan, npm]
+    if: >-
+      !cancelled() && needs.npm.result != 'failure' && needs.plan.outputs.dry_run != 'true'
+      && github.ref == 'refs/heads/main' && inputs.targets != 'github'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm dist-tag through trusted publishing (OIDC)
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # npm dist-tag through trusted publishing needs npm 11.21.0 or later.
+      - run: npm install -g npm@^11.21.0
+
+      - name: Point latest at the newest prerelease
+        run: |
+          for base in krepis krepis-kit; do
+            name="@$NPM_SCOPE/$base"
+            versions=$(npm view "$name" versions --json --prefer-online 2>/dev/null | node -e '
+              let s = ""; process.stdin.on("data", d => (s += d)).on("end", () => {
+                let v; try { v = [].concat(JSON.parse(s)) } catch { v = [] }
+                console.log(v.filter(x => typeof x === "string" && x !== "0.0.0-stage").join(" "))
+              })')
+            if [ -z "$versions" ]; then echo "$name has no release on npm"; continue; fi
+            if printf '%s\n' $versions | grep -qv -- -; then
+              echo "$name has a stable release; latest is set by publishing"; continue
+            fi
+            newest=$(npx -y semver@7 $versions | tail -1)
+            current=$(npm view "$name" dist-tags.latest --prefer-online)
+            if [ "$current" = "$newest" ]; then echo "$name: latest is $newest"; continue; fi
+            npm dist-tag add "$name@$newest" latest \
+              || echo "::warning::Could not point $name latest at $newest (it is $current). Tick 'Allow npm dist-tag' on the package's trusted publisher on npmjs.com."
+          done
 
   github:
     needs: pack
