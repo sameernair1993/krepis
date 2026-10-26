@@ -1,6 +1,6 @@
 # Guide
 
-How to install Krepis and use it in an application. For the design behind each feature, see [API](API.md).
+How to install Krepis and use it in an application. For the full reference, see [API](API.md).
 
 - [Requirements](#requirements)
 - [Install](#install)
@@ -250,7 +250,7 @@ Differences from Mongoose that can affect a migration:
 - `findOneAndUpdate` returns the updated document by default;
 - an unbounded read throws.
 
-See [API → Prototype](API.md#prototype-what-krepis-implements-today) for the full list.
+See [API → Overview](API.md#overview) for the full list.
 
 ## The analyser
 
@@ -355,7 +355,7 @@ npx krepis drill                                       # every scenario; exit 1 
 npx krepis drill --scenario credential-rotation,idle   # a subset
 ```
 
-Scenarios: credential rotation, auth outage, restart, slow node, overload (two variants), network blip, idle, and on a three-member replica set: step-down, primary crash and rolling restart. A full run takes about 13 minutes.
+Scenarios: credential rotation, auth outage, restart, slow node, overload (two variants), network blip, idle, and on a three-member replica set: step-down, primary crash and rolling restart.
 
 ## CommonJS
 

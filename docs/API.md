@@ -1,18 +1,17 @@
-# API design: the data access layer
+# API
 
-> The prototype section below describes what is built. Later sections are the design; where they differ, the prototype is what ships.
+The data layer in `@sameernair/krepis`, and observe mode in `@sameernair/krepis-kit`. For connection helpers, see [Connections](CONNECTIONS.md).
 
 ## Design principles
 
 1. **MongoDB-native.** Filters, updates and pipeline stages use MongoDB's own syntax, fully typed from the schema. There is no new query language.
 2. **The naive path is a good path.** Defaults are safe and efficient: relations are batched, reads are bounded, inputs are checked, sensitive fields are hidden.
-3. **Costs are visible.** Planned: any query can `.explain()` itself in plain language.
-4. **Escape hatch always available.** `collection.raw()` returns the underlying driver collection for anything Krepis doesn't cover.
-5. **Built on the official driver.** Krepis never reimplements the wire protocol, server selection or pooling.
+3. **Escape hatch always available.** `collection.raw()` returns the underlying driver collection for anything Krepis doesn't cover.
+4. **Built on the official driver.** Krepis never reimplements the wire protocol, server selection or pooling.
 
-## Prototype: what `krepis` implements today
+## Overview
 
-`packages/krepis/src/dal/` is the prototype, built and tested by porting models from open-source applications (LibreChat, GrowthBook). Where it differs from the draft below, the prototype reflects decisions made against real code:
+A model moved from Mongoose looks like this:
 
 ```ts
 import { fromMongoose, schema, t, type ObjectId, type TypedSchema } from '@sameernair/krepis';
@@ -36,7 +35,7 @@ const Tokens = fromMongoose(mongoose).collection('tokens', tokenSchema, { scope:
   - results are plain objects;
   - no autoIndex (`ensureIndexes()` is explicit);
   - an unbounded `find(...).toArray()` throws; `.all()` states the intent.
-- **`scope` hook:** one function per collection injects a filter, stamps inserts and sanitises updates. Tenant isolation is 19 lines on top of it, against the 260 lines of Mongoose plugin plus bulkWrite helper it replaced. An update the hook drops entirely matches nothing; it is never widened.
+- **`scope` hook:** one function per collection injects a filter, stamps inserts and sanitises updates. An update the hook drops entirely matches nothing; it is never widened.
 - **Typed paths:** filters, updates (including `$push`/`$addToSet`/`$pull`/`$pullAll`/`$mul` and positional `$`, `$[]`, `$[id]`), sorts and projections check dotted paths and their value types; `select()` and `projection` narrow the result type. A projection built at runtime (`Record<string, 0>`) has no literal keys, so it is not key-checked and the row keeps the full document type.
 - **`aggregate()`:** a typed builder in native stage syntax; see [Aggregation pipelines](#aggregation-pipelines).
 - **`include()`:** typed relation loading in one batched read per relation per level; see [Relations without N+1](#relations-without-n1).
@@ -45,33 +44,35 @@ const Tokens = fromMongoose(mongoose).collection('tokens', tokenSchema, { scope:
 - **Errors** (`KrepisValidationError`, `KrepisCastError`, `KrepisUnboundedReadError`) work with `instanceof` even when an app resolves two installed copies of Krepis. Each carries a registry-symbol brand, so the check does not depend on which copy created the error.
 - **`createDal(client)` and `ObjectId`:** the DAL builds ids with the `mongodb` package it resolves. If your client comes from a different copy of the driver (for example, one nested under another package), pass `bson: { ObjectId }` from that copy. `fromMongoose` does this for you with `mongoose.mongo.ObjectId`.
 - **Packaging:**
-  - Two packages: `krepis` is the data layer (root) and `@sameernair/krepis/connections`; `krepis-kit` is the analyser (root), the CLI and `@sameernair/krepis-kit/drill`, and depends on `krepis`. Importing `krepis` loads no connections code.
-  - `krepis`, `@sameernair/krepis/connections` and `@sameernair/krepis-kit/drill` are one CommonJS implementation. Their ESM entry points are thin wrappers over it, so `import` and `require` return the same classes.
+  - Two packages: `@sameernair/krepis` is the data layer (root) and `@sameernair/krepis/connections`; `@sameernair/krepis-kit` is the analyser (root), the CLI and `@sameernair/krepis-kit/drill`, and depends on `@sameernair/krepis`. Importing the data layer loads no connections code.
+  - The data layer, `@sameernair/krepis/connections` and `@sameernair/krepis-kit/drill` are one CommonJS implementation. Their ESM entry points are thin wrappers over it, so `import` and `require` return the same classes.
   - Bundling to ESM with esbuild while leaving `mongodb` external needs the usual banner, because the implementation `require()`s the driver: `--banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"`. Rollup, and esbuild with `--format=cjs`, need nothing.
-  - The analyser root (`krepis-kit`) is ESM-only; CommonJS loads it with `require()` through Node's `require(esm)`, hence `engines: node >=20.19`.
+  - The analyser root (`@sameernair/krepis-kit`) is ESM-only; CommonJS loads it with `require()` through Node's `require(esm)`, hence `engines: node >=20.19`.
   - Types resolve under `moduleResolution` `node16`/`nodenext`, `bundler` and the legacy `node`.
-  - Supported: drivers 4.17 to 7 and Mongoose 6 to 9 alongside `fromMongoose` (tested in `packages/krepis/test/dalMatrix.test.ts`), and servers 7.0, 8.0, 8.3 and 9.0 (run locally; CI runs 8.0).
+  - Supported: drivers 4.17 to 7 and Mongoose 6 to 9 alongside `fromMongoose` (tested in `packages/krepis/test/dalMatrix.test.ts`), and servers 7.0, 8.0, 8.3 and 9.0 (CI runs 8.0; the others are run locally before a release).
 
-## Client
+## Creating a data layer
 
 ```ts
-import { krepis } from '@sameernair/krepis';
+import { MongoClient } from 'mongodb';
+import { createDal, fromMongoose } from '@sameernair/krepis';
 
-const db = krepis.connect(uri, {
-  app: 'orders-api',          // names this service in findings and fleet metrics
-  database: 'shop',
-  pool: { maxPoolSize: 20, maxIdleTimeMS: 240_000 },   // passed to the driver; see Connections
-  capture: { enabled: process.env.NODE_ENV !== 'production', sampleRate: 1 },
+const client = new MongoClient(uri, { appName: 'orders-api' });
+const dal = createDal(client, {
+  dbName: 'shop',
   strictInput: true,          // operator-injection protection (default: true)
   unboundedReads: 'error',    // 'error' | 'warn' | 'allow' (default: 'error')
 });
+
+// or, alongside Mongoose, sharing its connection:
+const dal2 = fromMongoose(mongoose, { strictInput: true });
 ```
 
-`krepis.connect` returns a **process-wide singleton per connection target** (URI plus credentials). A second call for the same target returns the same client and records a finding, rather than opening another pool. This removes the most common cause of connection exhaustion by construction.
+You create and own the `MongoClient`; Krepis does not open connections itself. Use one client per process, or one per tenant with `TenantPools` below.
 
 ### Multi-tenant connections
 
-Apps with a database or cluster per tenant legitimately need one pool per tenant. A singleton per URI can't express that, so tenancy is explicit. **Implemented today** as `TenantPools` in `@sameernair/krepis/connections`; `krepis.tenants` below will be the same object reached from the client.
+Apps with a database or cluster per tenant legitimately need one pool per tenant. `TenantPools` in `@sameernair/krepis/connections` manages them.
 
 ```ts
 import { TenantPools, TenantLoginsFailingError, ClusterRefusingConnectionsError } from '@sameernair/krepis/connections';
@@ -112,7 +113,7 @@ Both fail-fast errors are named for the database fact, not for Krepis. Each carr
 
 Neither subclasses the driver's errors, so label-based retry code does not retry them at once.
 
-Pools opened through `TenantPools` are never reported as duplicates (`KR-C001`); their combined size is checked by `KR-C007`.
+The combined size of pools opened through `TenantPools` is checked by `KR-C007`.
 
 Pass `monitor: new IncidentMonitor({ recorder: { dumpDir } })` to label every tenant's client with its tenant key for KR-I001/I002 and the flight recorder (CONNECTIONS → Incident monitor). A tenant's own findings also arrive through `onEvent` as `{ type: 'finding', key }`. Findings that span tenants, a fleet I001 (`client: '*'`, with the tenants in `clients`) or an I002, arrive only through the monitor's `onFinding`.
 
@@ -121,51 +122,43 @@ To check how a connection setup survives credential rotation, restarts, slow nod
 ## Schema
 
 ```ts
-import { schema, t, ref } from '@sameernair/krepis';
+import { schema, t } from '@sameernair/krepis';
 
-const users = db.collection('users', schema({
-  _id: t.objectId(),
-  email: t.string().unique(),
+const Users = dal.collection('users', schema({
+  email: t.string().lowercase().trim(),
   passwordHash: t.string().hidden(),
   plan: t.enum(['free', 'pro']),
+  orgId: t.objectId().ref('orgs'),
   address: t.object({ city: t.string(), country: t.string() }).optional(),
   tags: t.array(t.string()),
 }, {
-  indexes: [{ keys: { plan: 1, _id: -1 } }],
-  validation: 'warn',         // 'off' | 'warn' | 'enforce' ($jsonSchema on the server)
+  timestamps: true,
+  indexes: [{ keys: { email: 1 }, unique: true }, { keys: { plan: 1, _id: -1 } }],
 }));
 ```
 
 - **`t.enum(values)`** types the field as the literal union of `values` (no `as const` needed). Every write checks membership at any depth: insert, defaults, `$set`, `$setOnInsert`, `$push`/`$addToSet`, positional paths and `$min`/`$max`. A non-member throws `KrepisValidationError` with the path. `trim`/`lowercase` run first, then one coercion (`'2'` ↔ `2`). `$inc` and `$mul` are rejected, by the types and at runtime. Reads never enforce membership, so documents written before a member was removed stay reachable (cast the value to query them). For a TS string enum, use `t.enum(Object.values(Plan))`; for a numeric enum, list the numbers.
 - **`.optional()`** distinguishes "may be missing" from "may be null".
 - **`.hidden()`** fields are left out of every read unless a projection names them with `1`: `find`, `findOne`, `findOneAndUpdate`, `findOneAndDelete`, `include` targets, and aggregates. In an aggregate, filtering and sorting on a hidden field work. An `$unset` is placed before the first stage that does more than `$match`, `$sort`, `$limit`, `$skip` or `$sample`, so `$$ROOT`, `$facet` and `$push` never carry the field. A stage from there on that names it, by key or `$field` reference, opts in. `distinct()` on a hidden field returns its values, since naming the field opts in. Filters and writes still see them. Reads type the field as optional, because it is absent unless selected; inserts still require it. Top-level fields only.
-- **`ref(() => collection)`** declares a reference. Undeclared references are detected anyway (see [Implicit references](IMPLICIT-REFERENCES.md)) and Krepis suggests declaring them.
-- **Indexes** are declared next to the schema. `krepis indexes plan` compares declarations with the live database and outputs a diff. It never applies changes to production by itself.
-
-### Inferred schemas
-
-```bash
-krepis infer --uri "$SNAPSHOT_URI" --collection orders --out src/schema/orders.ts
-```
-
-Generates a schema from sampled documents, with comments recording presence rates, type conflicts and detected references, so the generated file doubles as documentation of what the data really looks like.
+- **`.ref('orgs')`** records the collection a field refers to.
+- **Indexes** are declared next to the schema and created by `ensureIndexes()`, explicitly; nothing is created on startup.
 
 ## Queries
 
 ```ts
-const page = await orders
+const page = await Orders
   .find({ status: 'paid', total: op.gte(100) })     // typed MongoDB filter; operators on scalar fields go through op
   .select({ total: 1, userId: 1 })                   // typed projection; result type narrows
   .sort({ _id: -1 })
-  .limit(50);
+  .limit(50)
+  .toArray();
 
-const one = await users.findOne({ email });          // typed by schema
-const n = await orders.count({ status: 'pending' });
+const one = await Users.findOne({ email });          // typed by schema
+const n = await Orders.count({ status: 'pending' });
 ```
 
-- **Bounded reads:** with `unboundedReads: 'error'`, a `find` without `limit` throws in development and records a finding. Iteration over large results uses `.cursor()` explicitly.
-- **Pagination:** `.paginate({ after, limit })` uses range-based (cursor) pagination on an indexed sort key, not `skip`.
-- **Writes:** `insertOne`, `insertMany`, `updateOne`, `updateMany`, `deleteOne`, `deleteMany` with typed update operators. An operator with nothing it can name rejects every key, so `$push` on a schema without arrays does not compile. Writes record shapes, so drift is detected at write time.
+- **Bounded reads:** with `unboundedReads: 'error'` (the default), `toArray()` on a `find` without `limit` throws `KrepisUnboundedReadError`; `'warn'` emits a process warning instead. `.all()` reads everything on purpose, and `.cursor()` streams large results.
+- **Writes:** `insertOne`, `insertMany`, `updateOne`, `updateMany`, `deleteOne`, `deleteMany`, `findOneAndUpdate`, `findOneAndDelete` and `bulkWrite`, with typed update operators. An operator with nothing it can name rejects every key, so `$push` on a schema without arrays does not compile.
 - **Update pipelines** are opt-in: `updateOne(f, op.pipeline([{ $set: { total: { $multiply: ['$price', '$qty'] } } }]))`. The same works in `updateMany`, `findOneAndUpdate` and `bulkWrite`; compat takes Mongoose's `updatePipeline: true`.
   - **Allowed stages:** `$set`, `$addFields` and `$unset`, on paths of the schema. An unknown path throws `TypeError`.
   - **Not cast or validated:** values are computed on the server. A value from input must be wrapped in `{ $literal: value }`, because a string starting with `$` is a field path in a pipeline.
@@ -201,12 +194,7 @@ const rows = await Posts.find({ status: 'live' })
 - **Per-parent `limit`** uses one aggregate (`$topN`, or `$firstN` without `sort`), so it needs MongoDB 5.2+. When the `foreign` field is an array, the limit applies per value in it.
 - **Types:** `local`, `foreign`, `select` and `where` keys are checked against the right schema, including nested relations, and the result type carries each relation.
 - **Not supported:** `cursor()` with `include()` (throws), and `limit`/`sort` on a forward relation (throws: a forward relation returns what the ids reference).
-- **Measured:** 1,000 parents × 1 relation, median of 30: Krepis 9.5 ms, Mongoose 9 `populate().lean()` 10.6 ms, hydrated `populate()` 12.9 ms (`bench/include.ts`). The time is mostly the wire and BSON decoding, so the gap is modest; the guarantees above are the point.
-
-Planned:
-
-- **Within a request context,** `findOne` calls by `_id` on the same collection are batched automatically (DataLoader-style), so loops over results don't become N+1.
-- **A `$lookup` strategy** for relations that are filtered or sorted on, chosen from indexes and observed cardinality, with `.explain()` reporting which strategy was used and why.
+- **Measured:** 1,000 parents × 1 relation, median of 30: Krepis 9.5 ms, Mongoose 9 `populate().lean()` 10.6 ms, hydrated `populate()` 12.9 ms (`bench/include.ts`). The time is mostly the wire and BSON decoding, so the gap is modest; the fixed cost and the checks above are the point.
 
 ## Aggregation pipelines
 
@@ -233,8 +221,6 @@ const top = await Orders.aggregate()
 - **Limits:** `unwind` takes top-level arrays; `addFields` keys cannot be dotted; `$map`, `$reduce` and `$mergeObjects` are typed `unknown`.
 - **Measured:** wire-identical to the raw driver; +0.5–1.7% on a `$group` over 10k documents, +3.1–5.0% on 100 posts with a `$lookup` (`bench/aggregate.ts`).
 
-Planned: lint at build time (`$match` after `$unwind` or `$lookup` where it could move earlier, `$lookup` on an unindexed foreign field, `$group` at risk of the per-stage memory limit, `$sort` that can't use an index). In development these are warnings with explanations; in CI they become findings.
-
 ## Transactions
 
 Built.
@@ -248,8 +234,8 @@ const order = await dal.transaction(async (tx) => {
 });
 ```
 
-- **No session argument.** Every Krepis operation started inside the callback joins the transaction, including ones in functions the callback calls. A forgotten `{ session }` cannot happen, because there is nothing to forget.
-- **Parallel operations work.** `Promise.all` as the *first* operations of a transaction fails on every driver: the operations race to start the transaction on the server. On driver 7.7, 20 of 20 trials failed. Krepis runs operations one at a time until the first succeeds, then lets them run in parallel.
+- **No session argument.** Every Krepis operation started inside the callback joins the transaction, including ones in functions the callback calls, so Krepis calls cannot forget `{ session }`. Raw-driver and Mongoose calls still need it (see Limits below).
+- **Parallel operations work.** With a plain driver session, `Promise.all` as the *first* operations of a transaction can fail: the operations race to start the transaction on the server (20 of 20 trials failed on driver 7.7). Krepis runs operations one at a time until the first succeeds, then lets them run in parallel; `packages/krepis/test/transaction.test.ts` checks this over 20 trials.
 - **Retries:**
   - a `TransientTransactionError` re-runs the whole callback with jittered backoff;
   - an `UnknownTransactionCommitResult` retries only the commit;
@@ -266,18 +252,9 @@ const order = await dal.transaction(async (tx) => {
 - **Standalone servers** throw `TransactionsUnsupportedError`, with the server error as `cause`. Driver 7 rewraps that server error as advice to set `retryWrites=false`, which does not help a transaction; Krepis reports the real cause on every driver.
 - **Mixing with Mongoose:** `tx.session` is the driver session. Pass it to Mongoose or raw-driver calls (`{ session: tx.session }`) and they commit or roll back with the Krepis writes. Those calls do not wait for the transaction to start, so do not make them the first operation of a `Promise.all`. If Mongoose bundles a different copy of the driver, the session type needs a cast; it is the same object.
 - **`cursor()`** joins the transaction but is not queued behind the first operation.
-- **Cost:** 3 writes issue exactly 3 write commands and 1 `commitTransaction`. The median is 7% slower than a hand-threaded driver session, and that 7% includes Krepis's validation and casting.
+- **Cost:** 3 writes issue exactly 3 write commands and 1 `commitTransaction`. In `packages/krepis/bench/transaction.ts` the median was 7% slower than a hand-threaded driver session on the machine it was run on, including Krepis's validation and casting; measure your own.
 
-Not built: findings for long transactions; detecting raw or Mongoose writes inside a transaction that omit the session.
-
-## Explain
-
-```ts
-const e = await orders.find({ status: 'paid' }).sort({ _id: -1 }).explain();
-e.summary;     // plain-language explanation
-e.plan;        // the raw driver explain output
-e.findings;    // any rules that apply to this query shape
-```
+Limits: raw-driver or Mongoose writes inside the callback that omit `{ session: tx.session }` run outside the transaction, and Krepis does not detect them.
 
 ## Safety defaults
 
@@ -285,8 +262,8 @@ Built:
 
 | Default | Behaviour |
 |---|---|
-| `strictInput: true` (a `createDal`/`fromMongoose` option) | An operator object where the schema expects a scalar (or an array of scalars) throws `KrepisInputError`, unless it was built with `op`: `op.eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `all`, `exists`, `size`, `not`, or `op({ ... })` for anything else. Checked inside `$and`/`$or`/`$nor`, in every filter, `include` `where` and `aggregate().match()`. Blocks operator injection by construction. `strictInput: false` turns it off. |
-| `.hidden()` fields | Never returned unless selected by name. |
+| `strictInput: true` (a `createDal`/`fromMongoose` option) | An operator object where the schema expects a scalar (or an array of scalars) throws `KrepisInputError`, unless it was built with `op`: `op.eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `all`, `exists`, `size`, `not`, or `op({ ... })` for anything else. Checked inside `$and`/`$or`/`$nor`, in every filter, `include` `where` and `aggregate().match()`. Fields typed `t.mixed()`, `t.map()` or `t.object()`, and paths outside the schema, are not checked. `strictInput: false` turns it off. |
+| `.hidden()` fields | Left out of Krepis reads unless selected by name (`collection.raw()` returns them). |
 | `unboundedReads: 'error'` | `find` requires a `limit` or an explicit cursor. |
 | Regex | Search from input uses `match.prefix(input)` / `match.contains(input)`, which escape every metacharacter (`{ ignoreCase: true }` for `i`); a case-sensitive prefix is anchored, so it can use an index. A raw `{ $regex: input }` on a string field is an operator object, so `strictInput` refuses it. |
 | Server-side JavaScript | `$where`, `$function` and `$accumulator` throw `KrepisInputError` anywhere in a filter or stage, whatever `strictInput` says, unless the object holding them is built with `op` (the per-call opt-in). |
@@ -295,7 +272,7 @@ Built:
 
 ```ts
 import { observe } from '@sameernair/krepis-kit';
-observe(client, { sampleRate: 0.2 });
+const observer = observe(client, { sampleRate: 0.2 });
 ```
 
 Captures and the CLI:
@@ -330,7 +307,7 @@ The middleware labels a unit by method and route pattern, read when the response
 
 The Apollo plugin has no runtime dependency on `@apollo/server` and covers every resolver, including default resolvers that call a method on the source object. In a resolver that returns the query promise without `await` (`(o) => Users.findOne(…)`) there is no application frame to report, so the call site is the resolver itself: `resolver Order.user`. An application frame, when there is one, always wins. Naming the resolver costs about 0.15 µs per resolved field in sampled operations; `observer.apolloPlugin({ resolverSites: false })` turns it off.
 
-Observe mode uses the same collector and the same rules, with no API changes. Findings that depend on the data access layer (for example, strict-input enforcement) appear as recommendations instead.
+Observe mode needs no changes to your data code: it works with the raw driver and Mongoose alike.
 
 ```ts
 observe(client, { optimize: 'safe' });                         // batchLookups + dedupeReads
@@ -345,10 +322,4 @@ All optimisations are opt-in and apply only inside an observed unit of work. No 
 - `verify` (0–1) sends that fraction of optimised answers to the server too, returns the server's answer, and classifies any difference: `reordered` (same documents, unsorted query), `stale` (proved by a snapshot read at the cached answer's cluster time: a write landed after it), `unexplained` (a Krepis bug; report it), `unclassified` (no replica set, or outside the snapshot window). `onMismatch` receives `{ kind, verdict, namespace }`.
 - `maxAgeMs` (default 1,000) bounds how old an answer may be. Writes in the same unit of work invalidate. A write from another process is seen as soon as the request reads the changed document (or an unknown document of a cached result set) itself, and after at most `maxAgeMs` otherwise.
 
-Counters for the whole observer are on `krepis.optimizeStats`: `prefetches`, `served` (lookups answered from a prefetch), `deduped`, `verified`, `mismatches`, and per verdict `reordered`, `stale`, `unexplained`, `unclassified`.
-
-## Open questions
-
-- Multi-tenant model: is a tenant always a separate connection target, or should database-per-tenant on a shared cluster reuse one pool (`client.db(name)`)? The second needs far fewer connections when credentials allow it.
-- Schema builder: own `t.*` builders, or interoperate with an existing validation library? Own builders keep inference and presence metadata first-class.
-- How far to type aggregation output across `$group` and `$project` stages without making compile times painful.
+Counters for the whole observer are on `observer.optimizeStats`: `prefetches`, `served` (lookups answered from a prefetch), `deduped`, `verified`, `mismatches`, and per verdict `reordered`, `stale`, `unexplained`, `unclassified`.

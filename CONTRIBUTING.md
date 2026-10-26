@@ -51,7 +51,7 @@ See [Architecture → Monorepo layout](docs/ARCHITECTURE.md#monorepo-layout).
      --setParameter ingressConnectionEstablishmentMaxQueueDepth=30
    ```
 
-   Override the URI with `KREPIS_AUTH_URI` (default `mongodb://root:rootpw@127.0.0.1:27019/?authSource=admin`). The rate limiter needs mongod 8.0.12 or later. Measure on server counters (`serverStatus` SCRAM `authenticate`, `connections`), never on app-side counts. The drill starts its own containers, so it needs only docker. Its live tests run with `KREPIS_DRILL_DOCKER=1` (about two minutes: a standalone rig, then a three-member replica set); otherwise they skip. Drill and the analyser live in `packages/kit`; a full run of a config is `node --conditions=krepis-source src/cli.ts drill <config>` there: seven scenarios, about 8 minutes.
+   Override the URI with `KREPIS_AUTH_URI` (default `mongodb://root:rootpw@127.0.0.1:27019/?authSource=admin`). The rate limiter needs mongod 8.0.12 or later. Measure on server counters (`serverStatus` SCRAM `authenticate`, `connections`), never on app-side counts. The drill starts its own containers, so it needs only docker. Its live tests run with `KREPIS_DRILL_DOCKER=1` (about two minutes: a standalone rig, then a three-member replica set); otherwise they skip. Drill and the analyser live in `packages/kit`; a full run of a config is `node --conditions=krepis-source src/cli.ts drill <config>` there.
 2. **Known-answer fixtures for statistics.** Every statistic (presence, containment, skew) is tested on datasets where the correct answer is known in advance, including small-sample cases.
 3. **Every rule needs positive and negative fixtures.**
 4. **Overhead benchmarks run in CI.** A change that pushes collector overhead past the budget fails the build.

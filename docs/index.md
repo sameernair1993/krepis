@@ -127,7 +127,7 @@ npx krepis analyze --fail  # exit 1 when one is found, for CI
 
 ## Where it stands
 
-<p class="kr-lead">Krepis is new. This is an honest summary; each documentation page says what exists today.</p>
+<p class="kr-lead">Krepis is new. This is an honest summary of where it is.</p>
 
 <div class="kr-status">
   <div class="kr-card is-done">
@@ -139,8 +139,8 @@ npx krepis analyze --fail  # exit 1 when one is found, for CI
     <p>Used in production. APIs may change before v0.1.</p>
   </div>
   <div class="kr-card is-design">
-    <h3>Design only</h3>
-    <p>Parts of <a href="ARCHITECTURE.html">Architecture</a>, <a href="RULES.html">Rules</a> and <a href="IMPLICIT-REFERENCES.html">Implicit references</a> describe planned work, and are marked as such.</p>
+    <h3>Scope</h3>
+    <p>Krepis works at the database layer. It does not replace validation, authentication or access control in your app. The analyser's only finding today is N+1; see <a href="RULES.html">Rules</a>.</p>
   </div>
 </div>
 

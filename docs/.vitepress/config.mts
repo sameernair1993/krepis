@@ -43,6 +43,7 @@ export default defineConfig({
           { text: 'API', link: '/API' },
           { text: 'Connections', link: '/CONNECTIONS' },
           { text: 'Rules', link: '/RULES' },
+          { text: 'Architecture', link: '/ARCHITECTURE' },
         ],
       },
       {
@@ -50,15 +51,6 @@ export default defineConfig({
         items: [
           { text: 'Security', link: '/SECURITY' },
           { text: 'Privacy', link: '/PRIVACY' },
-        ],
-      },
-      {
-        text: 'Design notes',
-        collapsed: true,
-        items: [
-          { text: 'Vision', link: '/VISION' },
-          { text: 'Architecture', link: '/ARCHITECTURE' },
-          { text: 'Implicit references', link: '/IMPLICIT-REFERENCES' },
         ],
       },
     ],

@@ -69,7 +69,6 @@ These guards work at the database layer only: they govern how your app connects 
 
 - Not yet used in production by anyone.
 - CI runs the test suite against MongoDB 8.0 only.
-- Parts of the documentation describe planned work. Each page says what exists today.
 
 ## Documentation
 

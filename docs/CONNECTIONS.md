@@ -107,7 +107,7 @@ monitor.watch(client, { label: 'orders' });          // any MongoClient
 const tenants = new TenantPools({ appName: 'orders-api', resolve, monitor }); // labelled by tenant key
 ```
 
-- **KR-I001 amplification loop** and **KR-I002 reconnect herd** (RULES → Incidents), from pool and SDAM events only. Command monitoring is not needed.
+- **KR-I001 amplification loop** and **KR-I002 reconnect herd** ([Rules → Incidents](RULES.md#incidents-i)), from pool and SDAM events only. Command monitoring is not needed.
 - **Flight recorder:** a ring of 16,384 compact records held in typed arrays (about 0.6 MB). An error finding dumps the last 120 s, at most once a minute per rule (per mechanism for I001), as `krepis-incident-<time>-<reason>.json`. The dump analysis lists the **first movers** (clients ranked by when their current run of failures began), the first heartbeat failure, the first auth failure, and the **ordering**: did the clients start failing before the server showed trouble, or after?
 - **No secrets:** records hold error codes and code names only, never messages or URIs. Labels are whatever you pass.
 - **Overhead:** about 0.05 µs per pool event, measured on a laptop.
@@ -171,22 +171,9 @@ npx krepis drill --scenario credential-rotation,idle --json
 
 The rate limit matters most: cleanup logic that closes and reopens connections across many instances, or a deploy or failover that reconnects everyone at once, can hit it and look exactly like running out of connections.
 
-## What Krepis measures
-
-The collector subscribes to the driver's connection-pool events: created, ready, checked out, checked in, closed (with reason), pool cleared, checkout failed. From these:
-
-| Measure | Used for |
-|---|---|
-| Clients and pools per process, with creation sites | `KR-C001` |
-| Peak and p99 checked-out connections per instance | `KR-C002` pool sizing |
-| New connections per second | `KR-C004` churn vs rate limit |
-| Closures with errors after idle periods | `KR-C005` `maxIdleTimeMS` recommendation |
-| Checkout wait time, joined to fingerprints in flight | `KR-C006` |
-| Distinct pools per process grouped by connection target, with each pool's min/max size | `KR-C007` tenant arithmetic |
-
 ## Recommended defaults (starting points)
 
-- **One client per process.** The data access layer enforces it; observe mode flags violations.
+- **One client per process**, created once and reused (one per tenant with `TenantPools`).
 - **`maxPoolSize` from measured peak**, with headroom, instead of the default 100.
 - **`maxIdleTimeMS` below the network path's idle timeout**, so the driver retires idle connections before the network drops them.
 - **A sensible `waitQueueTimeoutMS`**, so saturation fails fast and visibly.
@@ -197,22 +184,7 @@ The collector subscribes to the driver's connection-pool events: created, ready,
 - **mongodb 7.1 or later** (Mongoose 9) for connection backpressure (KR-C012).
 - **A distinct `appName` per service**, so the server's logs and Atlas attribute connections and failed logins to the right service (KR-C011).
 
-## Fleet mode (optional, Redis)
-
-A single instance can't see the fleet. With `@krepis/fleet-redis`, each instance periodically writes its pool statistics to a Redis key with a TTL. The CLI aggregates them to answer: how many connections does the whole fleet hold against each node's limit, and how close is it to the rate limit?
-
-- **Off the query path.** Writes are periodic and asynchronous.
-- **Harmless if Redis is down.** Fleet metrics pause; nothing else changes.
-- **Not a connection broker.** Redis cannot share sockets between processes, so it is used for visibility only.
-
 ## What Krepis will not do
 
 - **Replace the driver's pool.** The pool implements server selection, retries, session pinning and failover to a cross-driver specification. Krepis configures and diagnoses it.
-- **Gate queries through Redis.** That would put a network round trip in front of every query.
-- **Cache query results** in the connection layer. Caching is a separate concern with hard invalidation problems.
-
-## Deferred: the sidecar proxy
-
-A Rust sidecar that multiplexes many application connections onto a small pool (prior art: Coinbase's `mongobetween`, written in Go) is the **last** item on the roadmap. It is built only if measurements show that right-sizing pools cannot fit the fleet under Atlas limits, which is most likely when apps run many workers per machine (PM2 cluster mode, Node's `cluster` module).
-
-Requirements if it is built: present as a `mongos`; correct cursor and transaction pinning; retryable writes; TLS and authentication; failover; validation against a subset of the official driver specification tests. Example kill criterion: at least a 5× reduction in connections on a real workload, with only a few milliseconds added at p99.
+- **Put a network round trip in front of every query**, for example to gate queries through a shared service.

@@ -51,7 +51,7 @@ npx krepis drill            # reads krepis.drill.{ts,mts,js,mjs}
 ## Limitations
 
 - Not yet used in production by anyone.
-- The only finding today is N+1, with repeated lookups as information. Index, schema and security rules are designed but not built.
+- The only finding today is N+1, with repeated lookups as information.
 
 ## Documentation
 

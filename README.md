@@ -122,8 +122,8 @@ npx krepis analyze --fail   # exit 1 when one is found, for CI
 
 - Alpha releases only, and not yet used in production by anyone.
 - CI runs the test suite against MongoDB 8.0 only. The 7.0 and 9.0 server runs are done locally before a release.
-- The analyser's only finding today is N+1 (with repeated lookups as information). Index, schema and security rules in [Rules](docs/RULES.md) are designed but not built.
-- Parts of the documentation describe planned work. Each page says what exists today.
+- The analyser's only finding today is N+1 (with repeated lookups as information). See [Rules](docs/RULES.md).
+- Krepis works at the database layer. It does not replace validation, authentication or access control in your app.
 
 ## Documentation
 
@@ -132,10 +132,10 @@ npx krepis analyze --fail   # exit 1 when one is found, for CI
 | [Guide](docs/GUIDE.md) | **Start here:** install, the data layer, the analyser, connections, drills, troubleshooting |
 | [API](docs/API.md) | The data layer: schema, queries, relations, pipelines, transactions, safety |
 | [Connections](docs/CONNECTIONS.md) | Pool checks, Atlas limits, breaker, governor, shedding, drills |
-| [Rules](docs/RULES.md) | Finding rules: the implemented ones and the planned catalogue |
+| [Rules](docs/RULES.md) | The rules Krepis checks, with their evidence and thresholds |
 | [Security](docs/SECURITY.md) | MongoDB-specific protections and Krepis's own security |
 | [Privacy](docs/PRIVACY.md) | What is captured, what never is, where it lives |
-| [Vision](docs/VISION.md), [Architecture](docs/ARCHITECTURE.md), [Implicit references](docs/IMPLICIT-REFERENCES.md) | Design notes, partly planned work |
+| [Architecture](docs/ARCHITECTURE.md) | How the parts fit together, fingerprinting, the capture format |
 | [Contributing](CONTRIBUTING.md) | Setup, repository layout, testing rules |
 
 The same documentation is published as a website with GitHub Pages.
