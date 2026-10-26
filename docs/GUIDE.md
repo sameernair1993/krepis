@@ -46,7 +46,7 @@ npm install -D @sameernair/krepis-kit             # the analyser, CLI and drills
 
 `@sameernair/krepis-kit` depends on `@sameernair/krepis`, so installing kit alone also works. (npm refuses the unscoped name `krepis` as too close to `redis`, so both packages are scoped.)
 
-> **Until the first release is on npm**, or to try an unreleased change, install from a build of this repository:
+> **To try a change that isn't on npm yet**, install from a build of this repository:
 >
 > ```bash
 > git clone https://github.com/sameernair1993/krepis.git && cd krepis

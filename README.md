@@ -4,7 +4,7 @@
 
 <p align="center">A typed data layer for MongoDB on Node.js, and an analyser that looks for N+1 queries in an existing app.</p>
 
-> **Status: pre-release.** Built and tested, but not yet published to npm and not yet used in production. APIs may change before v0.1. Feedback and issues are welcome.
+> **Status: alpha.** Built, tested and published to npm, but not yet used in production. APIs may change before v0.1. Feedback and issues are welcome.
 
 ## What it is
 
@@ -30,8 +30,6 @@ Some MongoDB mistakes are easy to make and hard to notice until later:
 Krepis tries to make the safe path the default one, and to back each behaviour with a test.
 
 ## Install
-
-Not on npm yet. Until it is, build the packages from this repository and install the tarballs: see [Guide → Install](docs/GUIDE.md#install). Once published:
 
 ```bash
 npm install @sameernair/krepis mongodb        # the data layer; mongodb is a peer dependency
@@ -122,7 +120,7 @@ npx krepis analyze --fail   # exit 1 when one is found, for CI
 
 ## Limitations
 
-- Not published to npm and not yet used in production by anyone.
+- Alpha releases only, and not yet used in production by anyone.
 - CI runs the test suite against MongoDB 8.0 only. The 7.0 and 9.0 server runs are done locally before a release.
 - The analyser's only finding today is N+1 (with repeated lookups as information). Index, schema and security rules in [Rules](docs/RULES.md) are designed but not built.
 - Parts of the documentation describe planned work. Each page says what exists today.

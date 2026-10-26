@@ -1,6 +1,6 @@
 # Contributing
 
-> Krepis is pre-release: built and tested, not yet published.
+> Krepis is in alpha: built, tested and published to npm, not yet used in production.
 
 ## Prerequisites
 

@@ -2,7 +2,7 @@
 
 N+1 query analysis and connection incident drills for MongoDB on Node.js. Attaches to an existing driver or Mongoose client; your data code does not change.
 
-> **Status: pre-release.** Built and tested, but not yet used in production. APIs may change before v0.1. Feedback and issues are welcome on [GitHub](https://github.com/sameernair1993/krepis/issues).
+> **Status: alpha.** Built and tested, but not yet used in production. APIs may change before v0.1. Feedback and issues are welcome on [GitHub](https://github.com/sameernair1993/krepis/issues).
 
 ## Install
 

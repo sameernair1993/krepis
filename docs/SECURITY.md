@@ -37,4 +37,4 @@ Not built yet. These rules are designed for observe mode and CI:
 
 ## Reporting a vulnerability
 
-Report privately via the repository's security advisory feature. Do not open a public issue. (Contact details to be added before the first release.)
+Report privately at [github.com/sameernair1993/krepis/security/advisories/new](https://github.com/sameernair1993/krepis/security/advisories/new). Do not open a public issue.

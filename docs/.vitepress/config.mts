@@ -7,13 +7,13 @@ const base = '/krepis/';
 
 export default defineConfig({
   title: 'Krepis',
-  description: 'A typed data layer for MongoDB on Node.js, with safe defaults and an analyser for N+1 queries. Pre-release.',
+  description: 'A typed data layer for MongoDB on Node.js, with safe defaults and an analyser for N+1 queries. Alpha.',
   base,
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}logo.svg` }],
     ['meta', { name: 'theme-color', content: '#0f766e' }],
     ['meta', { property: 'og:title', content: 'Krepis' }],
-    ['meta', { property: 'og:description', content: 'A typed data layer for MongoDB on Node.js. Pre-release.' }],
+    ['meta', { property: 'og:description', content: 'A typed data layer for MongoDB on Node.js. Alpha.' }],
   ],
   // Private notes may sit in docs/ locally; never publish them.
   srcExclude: ['DECISIONS.md', 'ROADMAP.md', '**/*.private.md'],

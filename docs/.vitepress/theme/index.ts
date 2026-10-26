@@ -7,7 +7,7 @@ export default {
   extends: DefaultTheme,
   Layout: () =>
     h(DefaultTheme.Layout, null, {
-      'home-hero-info-before': () => h('span', { class: 'kr-pill' }, 'Pre-release · not on npm yet'),
+      'home-hero-info-before': () => h('span', { class: 'kr-pill' }, 'Alpha · on npm'),
       'home-hero-image': () => h(HeroCode),
     }),
 };

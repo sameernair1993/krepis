@@ -132,11 +132,11 @@ npx krepis analyze --fail  # exit 1 when one is found, for CI
 <div class="kr-status">
   <div class="kr-card is-done">
     <h3>Built and tested</h3>
-    <p>The data layer, <code>@sameernair/krepis/connections</code>, and the analyser, CLI and drills. Tested against drivers 4.17 to 7 and Mongoose 6 to 9.</p>
+    <p>The data layer, <code>@sameernair/krepis/connections</code>, and the analyser, CLI and drills. Tested against drivers 4.17 to 7 and Mongoose 6 to 9. Published to npm as alpha releases: see <a href="GUIDE.html#install">Install</a>.</p>
   </div>
   <div class="kr-card is-next">
     <h3>Not yet</h3>
-    <p>Published to npm or used in production. APIs may change before v0.1. Until then, <a href="GUIDE.html#install">build from source</a>.</p>
+    <p>Used in production. APIs may change before v0.1.</p>
   </div>
   <div class="kr-card is-design">
     <h3>Design only</h3>
