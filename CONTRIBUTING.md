@@ -83,4 +83,23 @@ Follow the checklist in [Rules → Adding a rule](docs/RULES.md#adding-a-rule).
 
 ## Code of conduct
 
-To be added before the repository is public.
+This applies everywhere the project is discussed or worked on: issues, pull requests, reviews, discussions, and any other channel the project uses, as well as to anyone representing the project elsewhere.
+
+**Expected:**
+
+- Be respectful and patient, including with people new to MongoDB, TypeScript or open source.
+- Criticise code, designs and measurements, not people. Say what is wrong and, where you can, what would fix it.
+- Back claims with evidence (a test, a measurement, a reproduction), and accept evidence that contradicts your own.
+- Assume good faith, and ask before assuming someone meant harm.
+- Credit other people's work and ideas.
+
+**Not accepted:**
+
+- Harassment, insults, threats, or demeaning comments, including about anyone's identity, background, experience or appearance.
+- Sexual language or imagery, and unwelcome attention of any kind.
+- Publishing someone's private information (an address, an email, credentials, data from a database) without their permission.
+- Repeatedly disrupting discussions or pull requests after being asked to stop.
+
+**Reporting.** Report a problem by [opening an issue](https://github.com/sameernair1993/krepis/issues/new). Issues are public, so describe what happened without repeating anyone's private information. Security vulnerabilities go through [Security → Reporting a vulnerability](docs/SECURITY.md#reporting-a-vulnerability) instead.
+
+**Enforcement.** The maintainer reviews every report and responds as fits what happened, from a private note to editing or removing comments and code, a temporary ban, or a permanent ban from the project's spaces. Anyone asked to stop is expected to stop immediately.

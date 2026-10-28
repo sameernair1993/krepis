@@ -29,6 +29,7 @@ import { fieldStorage } from './context.ts';
 interface RequestContextLike {
   operationName?: string | null;
   operation?: { operation?: string } | null;
+  request?: { variables?: unknown };
 }
 
 interface FieldResolverParamsLike {
@@ -57,11 +58,12 @@ const fieldListener = {
 export function apolloPlugin(observer: Observer, options: ApolloPluginOptions = {}): ApolloPlugin {
   const resolverSites = options.resolverSites ?? true;
   return {
-    async requestDidStart() {
+    async requestDidStart(requestContext) {
       let unit;
       try {
         unit = observer.begin('graphql');
         unit?.enter();
+        unit?.input('variables', () => requestContext.request?.variables);
       } catch {
         observer.internalErrors++;
       }

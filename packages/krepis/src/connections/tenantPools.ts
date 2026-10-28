@@ -4,6 +4,7 @@ import * as mongodb from 'mongodb';
 import { isAuthFailure, isNetworkError } from './classify.ts';
 import { clusterKey, equalJitter, TokenBucket } from './governor.ts';
 import { checkConnectionOptions } from './preflight.ts';
+import { openManaged } from './clients.ts';
 import { ConnectionWatcher, type WatchableClient, type WatchOptions } from './watcher.ts';
 import type { ClientOptionsLike, ConnectionFinding } from './types.ts';
 
@@ -505,11 +506,11 @@ export class TenantPools<H = mongodb.MongoClient> {
   }
 
   private async openHandle(uri: string, options: ClientOptions): Promise<H> {
-    if (this.o.open) return this.o.open(uri, options);
+    if (this.o.open) return openManaged(() => this.o.open!(uri, options));
     const Driver = (this.o.driver ?? mongodb).MongoClient as unknown as new (u: string, o: ClientOptions) => mongodb.MongoClient;
     const client = new Driver(uri, options);
     try {
-      await client.connect();
+      await openManaged(() => client.connect());
     } catch (error) {
       await client.close().catch(() => {});
       throw error;

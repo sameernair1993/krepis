@@ -1,7 +1,8 @@
 export { ATLAS_TIERS, resolveLimits, type AtlasTier, type DeploymentLimits, type ResolvedLimits } from './limits.ts';
-export { formatConnectionFinding, type ClientOptionsLike, type ConnectionFinding, type ConnectionRuleId, type Severity } from './types.ts';
+export { formatConnectionFinding, type ClientOptionsLike, type ConnectionFinding, type ConnectionHolders, type ConnectionRuleId, type Severity } from './types.ts';
 export { checkConnectionOptions, driverHasBackpressure, monitorsPerNode, type PreflightInput } from './preflight.ts';
 export { ConnectionWatcher, watchConnections, type AddressTotals, type WatchableClient, type WatchOptions } from './watcher.ts';
+export { ClientWatcher, watchClients, type ClientWatchOptions, type MongoClientClass } from './clients.ts';
 export {
   ClusterRefusingConnectionsError,
   KrepisConnectionConfigError,

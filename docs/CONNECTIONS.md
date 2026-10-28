@@ -26,17 +26,85 @@ None of these is caused by the cluster event that exposes them, but each one mul
 
 ## What ships today: `@sameernair/krepis/connections`
 
-Five layers, each usable alone:
+Six layers, each usable alone:
 
 | Layer | API | What it does |
 |---|---|---|
 | Static check | `checkConnectionOptions({ options \| client, driver, deployment, fleet })` | Reads client options (including those in the URI) before anything connects. Raises KR-C003, C007, C008, C010, C011, C012 with arithmetic against the tier's limits. Pure; safe in CI. |
-| Runtime watcher | `watchConnections(client, opts)` | Listens to pool events only (no command monitoring). Raises KR-C004, C008, C009, C010 and C012 per node over a sliding window, at most once per window per rule. |
+| Runtime watcher | `watchConnections(client, opts)` | Listens to pool events only (no command monitoring). Raises KR-C002, C004, C005, C006, C008, C009, C010 and C012 per node over a sliding window, at most once per window per rule. |
+| Client watcher | `watchClients(MongoClient, opts)` | Raises KR-C001 when two or more connected clients share a deployment and credentials (cause 1 above), naming the file and line each was connected from. See below. |
 | Prevention | `new TenantPools({ appName, resolve, … })` | One client per tenant with safe defaults underneath the caller's options (`minPoolSize: 0`, `maxPoolSize: 10`, `maxIdleTimeMS: 300000`, `serverMonitoringMode: 'poll'`); refuses error-level options before opening anything; evicts idle tenants and caps open clients (least recently used); re-reads credentials and replaces a client whose credentials changed; and an **authentication circuit breaker** that closes a tenant's client after repeated login failures, fails its callers fast with `TenantLoginsFailingError`, and probes again after a jittered, doubling cooldown that re-resolves credentials. A **governor** handles storms across a cluster's tenants, and **overload shedding** stops tenants hammering a node that is refusing connections (both below). Works with Mongoose through the `open` / `clientOf` / `close` hooks. |
 | Incident monitor | `new IncidentMonitor({ onFinding, recorder })`, then `watch(client, { label })` or `TenantPools({ monitor })` | Mechanism-agnostic KR-I001 (amplification loop, per client and fleet) and KR-I002 (reconnect herd), with a flight recorder that dumps the last 120 s and names the first movers. Runs the watcher's C rules underneath. |
 | Drill | `krepis drill` / `runDrill(defineDrill({ setup, … }))` from `@sameernair/krepis-kit/drill` | Rehearses credential rotation, an authentication outage, a restart, a slow node, a node refusing connections, a network blip and idleness against **your own connection code**, on a disposable authenticated, rate-limited `mongo:8.0` in docker. Verdicts come from server counters; it exits 1 in CI when a scenario fails. |
 
 The breaker **closes** the client rather than only rejecting calls: a rejected call does not stop the pool's own refills, which are what keep logging in.
+
+### Duplicate clients
+
+```ts
+import { MongoClient } from 'mongodb';            // with Mongoose: mongoose.mongo.MongoClient
+import { watchClients, formatConnectionFinding } from '@sameernair/krepis/connections';
+
+const watcher = watchClients(MongoClient, { onFinding: (f) => console.warn(formatConnectionFinding(f)) });
+```
+
+It wraps `connect` and `close` on the class passed in, so it sees every client of that driver copy, including those a library creates. Call it at startup: clients connected earlier are not seen. Clients count as the same when their hosts (or SRV host), replica set, user, auth source and mechanism match; the user name is used for matching and is not reported. The finding names each call site, with a count for repeats, and the sum of their `maxPoolSize`. It is raised at most once a minute per deployment (`windowMs`), and from 2 clients (`threshold`). `watcher.openClients()` lists what is open now; `watcher.stop()` restores the driver's methods once no watcher is left.
+
+It does not tell a deliberate second client (a separate pool for analytics, for example) from an accidental one; raise `threshold` if you run a known number. Tenant clients with their own credentials or hosts do not count as duplicates. Clients opened by `TenantPools` are not counted at all: one client per tenant is its design, and it caps how many are open and closes idle ones, which is what this rule asks for. Clients the app creates beside them are still counted. If your tenants differ only by database, you may not need a client per tenant: one client can serve them all through `client.db(name)`.
+
+### Checkout waits
+
+When every connection in a pool is in use, the next operation waits in the driver's queue. The request slows down while no query looks slow on the server. Raising `maxPoolSize` is the usual reaction and often the wrong one: more connections running the same slow query make each of them slower. KR-C006 reports the waits and, with the analyser, names the queries holding the connections.
+
+```ts
+import { observe } from '@sameernair/krepis-kit';
+import { watchConnections, formatConnectionFinding } from '@sameernair/krepis/connections';
+
+const observer = observe(client);   // before connect
+watchConnections(client, { holders: observer.holders(), onFinding: (f) => console.warn(formatConnectionFinding(f)) });
+```
+
+```text
+KR-C006 WARN Operations wait for a connection [127.0.0.1:27018]
+  3 operations waited at least 100 ms for a connection in the last 60 s because all 2 were in use (longest 628 ms, median 311 ms). Held longest by: GET /reports: find app.reports 231093f556301c9b (100% of held time, 3 hold(s), longest 318 ms).
+  Fix: Make the queries holding connections faster (an index, a bound, maxTimeMS) or move them off the request path. Raise maxPoolSize only if the server has headroom: more connections running the same slow query make each one slower.
+```
+
+A wait counts only if, when it began, the connections in use plus the operations already queued filled the pool, and it lasted at least `checkoutWaitMs` (100 ms). Waiting for a new connection to be established does not count. It fires once `checkoutWaitThreshold` (3) such waits fall within `windowMs` (60 s), at most once per window. The name is the unit of work's label, the namespace and the analyser's fingerprint, the same one captures and `krepis analyze` show. Only commands inside a unit of work are named; time held by other commands is reported as an unnamed share. Without `holders`, the finding reports the waits only.
+
+Limits: a wait is counted when it ends, so a pool stuck behind very long holds is reported late. Give `holders` to one watcher: connection ids repeat across clients to the same server, so with several clients (`TenantPools`) names can be attributed to the wrong client. KR-C006 itself works per client, including under `TenantPools` and `IncidentMonitor`, which run the watcher's rules. It is on by default; `checkoutWaits: false` turns it off (under `TenantPools`, `watch: { checkoutWaits: false }`).
+
+### Idle drops
+
+A NAT gateway, firewall or load balancer forgets a connection that has been idle longer than its own timeout. The driver keeps the connection in its pool, and the next operation on it fails. Retryable reads hide the failure, so it shows up as extra latency, new connections and logins. When the drop fails an operation, the driver also clears the pool. KR-C005 reports these drops and recommends a `maxIdleTimeMS` below the path's timeout, so the pool retires connections before the network drops them.
+
+```text
+KR-C005 WARN Idle connections dropped by the network [db.internal:27017]
+  3 pooled connections failed after idling (shortest idle 1.6 s) in the last 60 s, while no connection was reused after idling a second or more. Something between this process and the server (a NAT gateway, firewall or load balancer) is forgetting idle connections. Each drop costs a new connection and a login, and when the drop fails an operation, the driver also clears the pool.
+  Fix: Set maxIdleTimeMS to 800, below the network path's idle timeout, so the pool retires connections before the network drops them.
+```
+
+A drop is a connection the driver closes because of an error, after it idled at least 1 s. That covers a connection that fails on its first use after idling, and one the network closed while it sat in the pool. Closures after a pool clear (a restart or failover) do not count. It fires once `idleDropThreshold` (3) drops fall within `windowMs` (60 s), at most once per window, and only if no connection in that time was reused after idling as long as the shortest drop. A network blip or a restart fails connections whatever their idle time, and an idle timeout does not. The recommendation is the longest idle that was reused fine, or half the shortest idle that failed if that is larger. With `minPoolSize` > 0 the fix also says to set it to 0, or retired connections are refilled (KR-C008).
+
+Limits: a path that silently discards packets, with `socketTimeoutMS: 0` (the default), is not reported until the operating system gives up on the socket, which can take minutes. With a finite `socketTimeoutMS` the same drop also raises KR-C010. The driver's TCP keepalive (every 120 s) keeps most paths from forgetting connections, so drops are usually seen only on paths with idle timeouts under about 2 minutes. It is on by default; `idleDrops: false` turns it off.
+
+### Pool size
+
+The driver opens pool connections on demand, so a `maxPoolSize` of 100 with a peak of 3 holds about 3 connections while things are calm. The cap matters when the server slows down. Operations then hold connections longer and the pool grows towards `maxPoolSize`, and each new connection is a login. Measured: 40 concurrent slow finds opened 40 connections with `maxPoolSize: 100` and 5 with `maxPoolSize: 5`. KR-C002 compares the most connections checked out at once with `maxPoolSize`, and the fleet's demand at that cap with the node's connection limit.
+
+```ts
+watchConnections(client, { deployment: { tier: 'M10' }, instances: 10, onFinding: (f) => console.warn(formatConnectionFinding(f)) });
+```
+
+```text
+KR-C002 WARN Pool far larger than its peak [db.internal:27017]
+  At most 4 of maxPoolSize 100 connections to this node were checked out at once in 60 min (52310 checkouts). At maxPoolSize 100, 10 instance(s) × (100 + 2 monitoring) = 1020 connections to this node, 68% of its 1500 limit. A pool grows to its cap when the server slows down, and each new connection is a login.
+  Fix: Set maxPoolSize to 8 (twice the observed peak; 10 × (8 + 2) = 100 per node), with waitQueueTimeoutMS so a saturated pool fails fast. The peak is only what was seen while watched: if KR-C006 then reports waits, raise it.
+```
+
+It needs `deployment` (a tier or `maxConnectionsPerNode`) and raises nothing without one. A node is judged after `poolObserveMs` (1 hour) and at least 100 checkouts. It fires when twice the peak (at least 5) is at most half of `maxPoolSize`, and when `instances` × (`maxPoolSize` + monitoring connections) reaches half the node's limit. It fires at most once per `poolObserveMs`.
+
+Limits: the peak is only what was seen while watched, so watch through a busy period before acting on it. A smaller pool trades connections for waits during a slowdown: in the drill's `slow-node` scenario, a pool of 5 recovered as fast as one of 100 and opened fewer connections, but raised KR-C006. It judges one client; with many clients per process (`TenantPools`), the fleet arithmetic is KR-C007's. It is on by default; `oversizedPool: false` turns it off.
 
 ### Governor: storms are handled per cluster
 

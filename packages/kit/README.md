@@ -1,6 +1,6 @@
 # @sameernair/krepis-kit
 
-N+1 query analysis and connection incident drills for MongoDB on Node.js. Attaches to an existing driver or Mongoose client; your data code does not change.
+N+1 query analysis, query budgets, opt-in index and safety checks, and connection incident drills for MongoDB on Node.js. Attaches to an existing driver or Mongoose client; your data code does not change.
 
 > **Status: alpha.** Built and tested, but not yet used in production. APIs may change before v0.1. Feedback and issues are welcome on [GitHub](https://github.com/sameernair1993/krepis/issues).
 
@@ -33,6 +33,23 @@ What it reports:
 
 - **KR-P002, N+1 (warning).** Reported only when an earlier read supplied the looked-up values, never for repetition alone. Each finding gives the parent query and field, the query count, serial or parallel execution, time spent and call sites.
 - **KR-P012, repeated lookup (information).** The same lookup repeated in one unit of work with no parent driving it. It never fails `--fail`.
+- **On by default:** operator injection signals and server-side JavaScript (KR-S001, KR-S002); `hazards: false` turns them off.
+- **Opt-in, for tests and CI.** `explain: true` adds collection scans, in-memory sorts and unindexed `$lookup`s, each with a suggested index (KR-P001, P010, P003). `hazards: true` adds unanchored regular expressions, sensitive-looking fields in results and large reads without a limit (KR-S003, S004, KR-P006).
+
+In tests and CI:
+
+```ts
+import { expectQueries } from '@sameernair/krepis-kit';
+await expectQueries(observer, { max: 3 }, () => request(app).get('/posts'));   // fails with each query shape and call site
+```
+
+```bash
+npx krepis analyze --update-baseline                       # record today's findings
+npx krepis analyze --baseline krepis-baseline.json --fail  # fail only on new ones
+npx krepis analyze --format sarif --output krepis.sarif    # for GitHub code scanning; or --format markdown
+```
+
+Other frameworks: `observer.fastifyPlugin()`, `observer.koaMiddleware()`, `observer.honoMiddleware()`; NestJS on Express uses `observer.middleware()`.
 
 Options:
 
@@ -51,7 +68,7 @@ npx krepis drill            # reads krepis.drill.{ts,mts,js,mjs}
 ## Limitations
 
 - Not yet used in production by anyone.
-- The only finding today is N+1, with repeated lookups as information.
+- The default finding is N+1, with repeated lookups as information. The index and hazard checks are opt-in and have not yet been measured on the reference codebases.
 
 ## Documentation
 

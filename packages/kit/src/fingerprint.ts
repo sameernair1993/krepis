@@ -10,12 +10,12 @@ const IGNORED_COMMANDS = new Set([
 const ARRAY_OPERATORS = new Set(['$in', '$nin', '$all']);
 const LOGICAL_OPERATORS = new Set(['$and', '$or', '$nor']);
 
-function bsonType(value: object): string | undefined {
+export function bsonType(value: object): string | undefined {
   const t = (value as { _bsontype?: unknown })._bsontype;
   return typeof t === 'string' ? t : undefined;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && bsonType(value) === undefined
     && !(value instanceof Date) && !(value instanceof RegExp);
 }
@@ -73,6 +73,8 @@ export function shapeFilter(filter: unknown): Shape {
 
 /** Literal structure that is part of the code, not of the data: sort and projection specs. */
 function literalKeys(spec: unknown): Shape {
+  // The driver (5+) sends a find's sort as a Map.
+  if (spec instanceof Map) spec = Object.fromEntries(spec);
   if (!isPlainObject(spec)) return null;
   const out: Record<string, Shape> = {};
   for (const k of Object.keys(spec)) {

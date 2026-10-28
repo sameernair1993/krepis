@@ -48,9 +48,9 @@ flowchart LR
 ## Data flow
 
 1. **Record.** Inside a unit of work, the collector records each command: namespace, operation, fingerprint, timing, documents returned, and, for up to three commands per shape per unit, a call site.
-2. **Detect.** When the unit ends, the N+1 rule runs over its commands. Findings go to `onFinding`.
+2. **Detect.** When the unit ends, the N+1 rule runs over its commands. Findings go to `onFinding`. KR-S001 and KR-S002 (and, with `explain` or `hazards` on, the other plan and hazard rules) inspect each new query shape as it is seen, and report through `onPlanFinding` and `onHazard`.
 3. **Persist (opt-in).** With `capture` on, the unit's commands are aggregated by fingerprint and written, with its findings, to rotated NDJSON segments in `.krepis/`.
-4. **Report.** `krepis analyze` reads the segments, groups the same pattern across units of work, and prints a report, or JSON with `--json`. It does not connect to the database.
+4. **Report.** `krepis analyze` reads the segments, groups the same pattern across units of work, and prints a report: text, JSON, Markdown or SARIF, optionally compared with a baseline. It does not connect to the database.
 
 ## Query fingerprinting
 
@@ -82,7 +82,7 @@ A fingerprint identifies a query **shape** independent of its values.
 - Then three line types:
   - `{"t":"shape","fp","ns","op","shape"}`: the dictionary, once per fingerprint per segment, so every segment is readable on its own.
   - `{"t":"ctx","at","label","ms","cmds":[[fp, count, served, failed, sumMs, maxMs, returned]]}`: one per unit of work, its commands aggregated by fingerprint.
-  - `{"t":"finding","at",...}`: findings computed in process, written finished.
+  - `{"t":"finding","at",...}`: findings computed in process, written finished. Plan and hazard findings are written on their own line as they are found, not with a unit of work.
 - Written off the request path: a unit of work's lines are buffered when it ends and appended synchronously once a second by an unref'd timer, and on `detach()` and process exit. The buffer is bounded (overflow drops whole units of work, counted); write failures are counted, never thrown.
 - Segments rotate by size (default 16 MB). When a segment opens, `krepis-*.ndjson` files in the directory older than the retention setting (default 7 days) are deleted; other files are never touched.
 - Pool events are not captured; connection behaviour is covered by `@sameernair/krepis/connections`.

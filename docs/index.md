@@ -140,7 +140,7 @@ npx krepis analyze --fail  # exit 1 when one is found, for CI
   </div>
   <div class="kr-card is-design">
     <h3>Scope</h3>
-    <p>Krepis works at the database layer. It does not replace validation, authentication or access control in your app. The analyser's only finding today is N+1; see <a href="RULES.html">Rules</a>.</p>
+    <p>Krepis works at the database layer. It does not replace validation, authentication or access control in your app. The analyser's default finding is N+1; index and hazard checks are opt-in. See <a href="RULES.html">Rules</a>.</p>
   </div>
 </div>
 

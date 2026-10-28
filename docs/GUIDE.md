@@ -275,6 +275,17 @@ new ApolloServer({ schema, plugins: [observer.apolloPlugin()] });   // GraphQL: 
 await observer.run('job sync-users', () => syncUsers());            // anything else with a callback
 ```
 
+Other frameworks:
+
+```ts
+await fastify.register(observer.fastifyPlugin());   // Fastify
+koa.use(observer.koaMiddleware());                  // Koa, before the router; labels come from @koa/router
+hono.use(observer.honoMiddleware());                // Hono
+nestApp.use(observer.middleware());                 // NestJS on Express
+```
+
+Each request is labelled with its route pattern (`GET /users/:id`) where the framework provides one, and with the masked path otherwise. Tested with Fastify 5, Koa 3 with @koa/router 15, and Hono 4.
+
 Commands outside a unit of work are not analysed and cost almost nothing.
 
 To see findings as they happen instead of capturing them:
@@ -297,6 +308,55 @@ npx krepis analyze --fail             # exit 1 if any N+1 is found: use this in 
 
 Repeated lookups that are not N+1 (`KR-P012`) are listed separately and never fail the build. `--json` gives machine-readable output, and `--rtt 1,20,50` projects the cost at those round-trip times.
 
+### Query budgets in tests
+
+Fail a test when a block issues more queries than it should:
+
+```ts
+import { expectQueries } from '@sameernair/krepis-kit';
+
+await expectQueries(observer, { max: 3 }, () => request(app).get('/posts'));
+```
+
+Requests served while the block runs (through supertest, for example) are counted. On failure, `KrepisQueryBudgetError` lists each query shape with its count and call site. `observer.measure(label, fn)` returns the count (`{ result, queries }`) without asserting. Run one measurement at a time per observer.
+
+### Index and safety checks
+
+Two groups of rules are off by default and meant for tests and CI:
+
+```ts
+const observer = observe(client, { capture: true, explain: true, hazards: true });
+// ... run the suite ...
+await observer.settled();   // wait for the last explains before the process exits
+```
+
+- `explain: true` (or `KREPIS_EXPLAIN=1`) sends `explain` once per query shape and reports collection scans, in-memory sorts and unindexed `$lookup`s, each with a suggested index.
+- Operator injection signals (a call site that receives operator objects where it otherwise receives values) and server-side JavaScript are reported by default. `hazards: true` (or `KREPIS_HAZARDS=1`) adds unanchored regular expressions, sensitive-looking fields in results, and large reads without a limit; `hazards: false` (or `KREPIS_HAZARDS=0`) turns all of them off.
+
+See [Rules](RULES.md) for what each checks and its limits, and [Privacy](PRIVACY.md) for what they read.
+
+### Baselines and reports in CI
+
+On an existing codebase, record what is there today and fail only on new findings:
+
+```bash
+npx krepis analyze --update-baseline              # writes krepis-baseline.json; commit it
+npx krepis analyze --baseline krepis-baseline.json --fail
+```
+
+A finding is identified by its rule, collection, query shape and (for N+1) the parent query, not by database name or call site line, so it survives reformatting. The text report ends with how many findings are new, known and no longer seen.
+
+`--format markdown` writes a summary for a pull request comment, and `--format sarif` a report for GitHub code scanning:
+
+```yaml
+- run: npx krepis analyze --baseline krepis-baseline.json --format sarif --output krepis.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: krepis.sarif
+```
+
+The upload needs the `security-events: write` permission. A finding with no recorded call site, or one outside the directory the command runs in, is written without a location, and GitHub code scanning does not show results without one; the text and markdown reports still list it. Run the command from the repository root.
+
 ### Production sampling
 
 ```ts
@@ -316,7 +376,7 @@ Inside a unit of work, a loop of `_id` lookups driven by an earlier read is answ
 ## Connections
 
 ```ts
-import { checkConnectionOptions, watchConnections, formatConnectionFinding, TenantPools } from '@sameernair/krepis/connections';
+import { checkConnectionOptions, watchConnections, watchClients, formatConnectionFinding, TenantPools } from '@sameernair/krepis/connections';
 
 // At startup: flag risky pool settings for your deployment.
 for (const f of checkConnectionOptions({ client, deployment: { tier: 'M10' }, fleet: { instances: 6 } })) {
@@ -324,7 +384,15 @@ for (const f of checkConnectionOptions({ client, deployment: { tier: 'M10' }, fl
 }
 
 // At runtime: watch pool events for churn, auth failures and idle drops.
-watchConnections(client, { deployment: { tier: 'M10' }, onFinding: (f) => console.warn(formatConnectionFinding(f)) });
+// With deployment and instances, it also reports a maxPoolSize far above the measured peak (KR-C002).
+watchConnections(client, { deployment: { tier: 'M10' }, instances: 6, onFinding: (f) => console.warn(formatConnectionFinding(f)) });
+
+// KR-C006 (on by default) reports operations waiting for a connection; holders names the queries holding them (observer: from observe()).
+watchConnections(client, { holders: observer.holders(), onFinding: (f) => console.warn(formatConnectionFinding(f)) });
+
+// At startup, before clients connect: report several clients open to the same deployment (KR-C001).
+// Pass the driver's class: MongoClient from 'mongodb', or mongoose.mongo.MongoClient.
+watchClients(MongoClient, { onFinding: (f) => console.warn(formatConnectionFinding(f)) });
 
 // Multi-tenant apps: one client per tenant, with a login circuit breaker, a storm governor and overload shedding.
 const pools = new TenantPools({ appName: 'orders-api', resolve: async (tenant) => ({ uri: await secretFor(tenant) }) });
@@ -375,6 +443,8 @@ Bundling to ESM with esbuild while keeping `mongodb` external needs this banner,
 |---|---|
 | `KREPIS_DISABLED=1` | The analyser attaches nothing; `observe()` returns an inert observer. |
 | `KREPIS_CAPTURE=1` or a directory | Turns on capture without code changes (default directory `.krepis/`). An explicit `capture: false` wins. |
+| `KREPIS_EXPLAIN=1` | Turns on plan evidence (`explain: true`). An explicit `explain: false` wins. |
+| `KREPIS_HAZARDS=1` | Turns on all hazard rules (`hazards: true`); `KREPIS_HAZARDS=0` turns them off, including KR-S001 and KR-S002, which are on by default. An explicit `hazards` option wins. |
 
 ## Troubleshooting
 

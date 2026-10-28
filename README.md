@@ -109,20 +109,24 @@ npx krepis analyze --fail   # exit 1 when one is found, for CI
 ```
 
 - **Evidence for each finding.** An N+1 finding needs proof that an earlier read supplied the looked-up values. Lookups that only repeat are listed separately, as information.
+- **In tests and CI.** `expectQueries(observer, { max: 3 }, fn)` fails a test that issues too many queries. `--baseline` fails only on new findings, and `--format markdown` or `sarif` writes a pull request summary or a code scanning report.
+- **Security signals by default.** A call site that receives operator objects where it otherwise receives values (operator injection signal) and server-side JavaScript are reported without configuration.
+- **Opt-in checks.** `explain: true` reports collection scans, in-memory sorts and unindexed `$lookup`s with a suggested index. `hazards: true` adds unanchored regular expressions, sensitive-looking fields in results and large reads without a limit.
+- **Frameworks.** Express and NestJS on Express, Fastify, Koa, Hono and Apollo Server.
 - **Optional runtime batching.** With `optimize: 'safe'`, `_id` lookups in a loop within one request are batched and identical reads are answered once. `packages/kit/bench/autobatch.ts` measures the effect.
 - **Overhead.** Commands outside a unit of work are not analysed, and `sampleRate` limits how many units are. `packages/kit/bench/overhead.ts` measures the cost on your machine. The handlers are wrapped so that an internal error is counted rather than thrown into your app, and `KREPIS_DISABLED=1` turns it off.
 - **Privacy.** Captures hold query shapes, not values, and stay on your machine.
 
 ## Connections and drills
 
-- **`@sameernair/krepis/connections`:** a static check of client options, a pool watcher, and `TenantPools`, a per-tenant client cache with a login circuit breaker, a cluster-wide governor for login storms, and shedding when a node refuses new connections.
+- **`@sameernair/krepis/connections`:** a static check of client options, a pool watcher, a duplicate-client watcher, and `TenantPools`, a per-tenant client cache with a login circuit breaker, a cluster-wide governor for login storms, and shedding when a node refuses new connections.
 - **`krepis drill`** runs your own connection code through incidents (credential rotation, auth outages, restarts, slow nodes, network blips, connection limits, step-downs) against a throwaway MongoDB container, and exits 1 on failure.
 
 ## Limitations
 
 - Alpha releases only, and not yet used in production by anyone.
 - CI runs the test suite against MongoDB 8.0 only. The 7.0 and 9.0 server runs are done locally before a release.
-- The analyser's only finding today is N+1 (with repeated lookups as information). See [Rules](docs/RULES.md).
+- The analyser's default finding is N+1 (with repeated lookups as information). The index and hazard checks are opt-in and have not yet been measured on the reference codebases. See [Rules](docs/RULES.md).
 - Krepis works at the database layer. It does not replace validation, authentication or access control in your app.
 
 ## Documentation

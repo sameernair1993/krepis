@@ -1,4 +1,4 @@
-import type { Finding, NPlusOneFinding, RepeatEvidence, RepeatedLookupFinding } from './types.ts';
+import type { Finding, HazardFinding, IndexKeys, NPlusOneFinding, PlanFinding, RepeatEvidence, RepeatedLookupFinding } from './types.ts';
 
 export interface ReportOptions {
   /**
@@ -101,6 +101,96 @@ export function formatRepeatedLookup(f: RepeatedLookupFinding, options: ReportOp
   return lines.join('\n');
 }
 
-export function formatFinding(f: Finding, options: ReportOptions = {}): string {
-  return f.rule === 'KR-P002' ? formatNPlusOne(f, options) : formatRepeatedLookup(f, options);
+export function formatFinding(f: Finding | PlanFinding | HazardFinding, options: ReportOptions = {}): string {
+  if (f.rule === 'KR-P002') return formatNPlusOne(f, options);
+  if (f.rule === 'KR-P012') return formatRepeatedLookup(f, options);
+  if (f.rule === 'KR-P001' || f.rule === 'KR-P010' || f.rule === 'KR-P003') return formatPlanFinding(f as PlanFinding);
+  return formatHazardFinding(f as HazardFinding);
+}
+
+const code = (names: string[]) => names.map((n) => `\`${n}\``).join(', ');
+
+export function formatHazardFinding(f: HazardFinding): string {
+  const what = `${f.command} ${f.namespace} ${shortShape(f.shape)}`;
+  const lines: string[] = [];
+  const head = (title: string) => lines.push(`${f.rule} ${title}${f.severity === 'info' ? '  [info]' : ''}  in ${f.context}`);
+  const sites = () => { for (const site of f.callSites.slice(0, 3)) lines.push(`  at ${site}`); };
+  switch (f.rule) {
+    case 'KR-S001':
+      head('operator injection signal');
+      if (f.input !== undefined) {
+        lines.push(`  ${what}: ${code(f.fields)} received an operator object (${f.operators.join(', ')}) that the client sent in the request's ${f.input}.`);
+        sites();
+        lines.push(`  A client that can send an operator instead of a value can match documents it should not see (a { "$ne": null } matches any value).`);
+      } else {
+        lines.push(`  ${what}: the call site that sends ${code(f.fields)} as a value also sent it as an operator object (${f.operators.join(', ')}).`);
+        sites();
+        lines.push(`  If ${code(f.fields)} comes from request input (a JSON body, a parsed query string), a client can send { "$ne": null } instead of a value and match documents it should not see.`);
+      }
+      lines.push('');
+      lines.push(`  Fix: check the type before querying (typeof value === 'string'), or compare with { ${f.fields[0]}: { $eq: value } }, which treats an object as a value.`);
+      lines.push('  Mongoose: mongoose.set(\'sanitizeFilter\', true). If this field takes operators by design, ignore this finding.');
+      break;
+    case 'KR-S002':
+      head('server-side JavaScript');
+      lines.push(`  ${what} uses ${f.operators.join(', ')}. The server runs JavaScript for it: input built into it runs as code on the server.`);
+      lines.push('  It is also slow, cannot use an index for its own condition, and is deprecated (server-side JavaScript in MongoDB 8.0, mapReduce in 5.0).');
+      sites();
+      lines.push('');
+      lines.push('  Fix: express it with query operators or $expr, or an aggregation pipeline.');
+      break;
+    case 'KR-S003':
+      head('unanchored regular expression');
+      lines.push(`  ${what} matches ${code(f.fields)} with a pattern that does not start with ^, so the server tests it against every index key or document.`);
+      sites();
+      lines.push('  If the pattern is built from input, escape it and bound its length: special characters are otherwise interpreted, and a crafted pattern can run for a long time.');
+      lines.push('');
+      lines.push('  Fix: anchor it (^prefix) when a prefix match is meant; for search, use a text index or Atlas Search.');
+      break;
+    case 'KR-S004':
+      head('sensitive field returned');
+      lines.push(`  ${what} returned ${code(f.fields)}. If the result reaches a response or a log, so do they.`);
+      sites();
+      lines.push('');
+      lines.push(`  Fix: project them out ({ projection: { ${f.fields[0]}: 0 } }); Mongoose: select: false on the schema path. Where the read needs them (a login check), ignore this.`);
+      break;
+    case 'KR-P006':
+      head('unbounded read');
+      lines.push(`  ${what} has no limit and returned ${f.returned} documents in one unit of work. Its cost grows with the collection: memory, time and transfer.`);
+      sites();
+      lines.push('');
+      lines.push('  Fix: page it (a limit with a range on an indexed field, such as _id greater than the last one seen), or iterate the cursor if every document is needed.');
+      break;
+  }
+  return lines.join('\n');
+}
+
+function indexText(keys: IndexKeys): string {
+  return `{ ${Object.entries(keys).map(([k, v]) => `${/^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${v}`).join(', ')} }`;
+}
+
+export function formatPlanFinding(f: PlanFinding): string {
+  const coll = f.namespace.split('.').slice(1).join('.');
+  const lines: string[] = [];
+  const what = `${f.command} ${f.namespace} ${shortShape(f.shape)}`;
+  if (f.rule === 'KR-P001') {
+    lines.push(`KR-P001 collection scan  in ${f.context}`);
+    lines.push(`  ${what} reads every document in ${coll}: no index supports this filter.`);
+  } else if (f.rule === 'KR-P010') {
+    lines.push(`KR-P010 in-memory sort  in ${f.context}`);
+    lines.push(`  ${what} is sorted in memory: no index provides this order, so every matching document is read and sorted before the first is returned.`);
+  } else {
+    lines.push(`KR-P003 $lookup without an index  in ${f.context}`);
+    lines.push(`  ${what} joins ${f.lookup?.from} on ${f.lookup?.foreignField}, and ${f.lookup?.from} has no index that starts with ${f.lookup?.foreignField}.`);
+    lines.push(`  Without one, the server scans ${f.lookup?.from} for every input document, or builds a hash table from all of it.`);
+  }
+  for (const site of f.callSites.slice(0, 3)) lines.push(`  at ${site}`);
+  lines.push(`  Plan: ${f.plan.stages.join(' > ') || 'unknown'}${f.plan.indexes.length > 0 ? ` (indexes: ${f.plan.indexes.join(', ')})` : ''}`);
+  lines.push('');
+  const target = f.rule === 'KR-P003' ? f.lookup?.from ?? coll : coll;
+  lines.push(f.rule === 'KR-P003' ? '  Fix: index the joined field:' : '  Fix: add an index, with equality fields first, then the sort, then range fields:');
+  lines.push(`    db.collection('${target}').createIndex(${indexText(f.suggestedIndex)})`);
+  lines.push(`  In a Krepis schema: indexes: [{ keys: ${indexText(f.suggestedIndex)} }]. Mongoose: schema.index(${indexText(f.suggestedIndex)}).`);
+  lines.push('  Check it against the collection\'s other queries first: an existing index may only need a field added.');
+  return lines.join('\n');
 }

@@ -31,6 +31,8 @@ export interface CommandRecord {
   prefetch?: boolean;
   /** A lookup auto-batching answered locally, without a round trip. */
   served?: boolean;
+  /** A `find` sent without a limit (KR-P006). */
+  unbounded?: boolean;
 }
 
 /**
@@ -87,3 +89,60 @@ export interface RepeatedLookupFinding extends RepeatEvidence {
 }
 
 export type Finding = NPlusOneFinding | RepeatedLookupFinding;
+
+/** An index key pattern: field → 1 or -1, in index order. */
+export type IndexKeys = Record<string, 1 | -1>;
+
+/**
+ * KR-P001 collection scan, KR-P010 in-memory sort, KR-P003 `$lookup` without an index: what the server's query planner
+ * chose for a query shape (`observe(client, { explain: true })`). Reported once per shape per observer.
+ */
+export interface PlanFinding {
+  rule: 'KR-P001' | 'KR-P010' | 'KR-P003';
+  severity: 'warn';
+  /** Unit of work in which the shape was first seen. */
+  context: string;
+  namespace: string;
+  fingerprint: string;
+  command: string;
+  shape: string;
+  callSites: string[];
+  /** Stage and index names of the winning plan. */
+  plan: { stages: string[]; indexes: string[] };
+  /** The index that would serve this query, in equality, sort, range order; for KR-P003, on `lookup.from`. */
+  suggestedIndex: IndexKeys;
+  /** KR-P003 only: the joined collection and field. */
+  lookup?: { from: string; foreignField: string };
+}
+
+/**
+ * Hazards seen in observe mode, reported once per query shape (KR-S001 once per call site and field) per observer.
+ * Field names and operator names only; never values.
+ * - KR-S001 operator injection: a filter field received an operator object that came from request input, or one call
+ *   site sent a scalar and an operator object for the same field in otherwise identical queries.
+ * - KR-S002 server-side JavaScript: `$where`, `$function`, `$accumulator` or `mapReduce`.
+ * - KR-S003 unanchored regular expression (info).
+ * - KR-S004 sensitive field returned by a read (info).
+ * - KR-P006 unbounded read: a `find` without a limit that returned more than the threshold.
+ */
+export interface HazardFinding {
+  rule: 'KR-S001' | 'KR-S002' | 'KR-S003' | 'KR-S004' | 'KR-P006';
+  severity: 'warn' | 'info';
+  context: string;
+  namespace: string;
+  command: string;
+  fingerprint: string;
+  shape: string;
+  callSites: string[];
+  /** Field paths involved. */
+  fields: string[];
+  /** Operators involved (`$where`, `$ne`, ...). */
+  operators: string[];
+  /** KR-P006: documents the read returned. */
+  returned?: number;
+  /**
+   * KR-S001: the request input the operator object came from (`body`, `query`, `params`, `variables`, or a name given
+   * to `observer.input`). Absent when the finding comes from one call site sending both forms.
+   */
+  input?: string;
+}

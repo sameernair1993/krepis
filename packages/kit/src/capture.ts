@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'no
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { WorkContext } from './context.ts';
-import type { Finding } from './types.ts';
+import type { Finding, HazardFinding, PlanFinding } from './types.ts';
 
 /**
  * NDJSON capture of what the collector saw, for `krepis analyze`.
@@ -13,7 +13,8 @@ import type { Finding } from './types.ts';
  * Line types, after one header line per segment:
  *   {"t":"shape","fp","ns","op","shape"}      once per fingerprint per segment (the dictionary)
  *   {"t":"ctx","at","label","ms","cmds":[[fp, count, served, failed, sumMs, maxMs, returned]]}   one per unit of work
- *   {"t":"finding","at",...Finding}           one per finding
+ *   {"t":"finding","at",...Finding}           one per finding; plan findings (KR-P001/P010/P003) and hazards (KR-S001-S004,
+ *                                             KR-P006) are written when they are found, on their own
  *
  * Writes happen off the request path: a unit of work's lines are buffered when it ends and appended once per
  * `flushIntervalMs` by an unref'd timer, plus synchronously on detach and process exit. Synchronous appends keep the
@@ -75,7 +76,7 @@ export function resolveCapture(setting: CaptureSetting | undefined, env = proces
   };
 }
 
-function packageVersion(): string {
+export function packageVersion(): string {
   try {
     return (createRequire(import.meta.url)('../package.json') as { version?: string }).version ?? 'unknown';
   } catch {
@@ -152,6 +153,17 @@ export class CaptureWriter {
 
     const body: string[] = [JSON.stringify({ t: 'ctx', at, label: ctx.label, ms: round(performance.now() - ctx.startedAt), cmds: [...rows.values()] })];
     for (const f of findings) body.push(JSON.stringify({ t: 'finding', at, ...f }));
+    if (this.enqueue(at, shapes, body)) this.stats.contexts++;
+  }
+
+  /** Buffer a finding produced outside a unit of work's end (plan evidence, hazards). It carries its own shape. */
+  recordFinding(finding: PlanFinding | HazardFinding): void {
+    const at = Date.now();
+    this.enqueue(at, new Map(), [JSON.stringify({ t: 'finding', at, ...finding })]);
+  }
+
+  /** Adds the lines to the buffer, choosing the segment; false if the buffer is full and they were dropped. */
+  private enqueue(at: number, shapes: Map<string, { ns: string; op: string; shape: string }>, body: string[]): boolean {
     const bodyBytes = body.reduce((n, l) => n + Buffer.byteLength(l) + 1, 0);
 
     // Shape lines depend on what the target segment already holds, so the segment is chosen first.
@@ -170,7 +182,7 @@ export class CaptureWriter {
 
     if (this.pendingBytes + bytes > this.opts.maxBufferBytes) {
       this.stats.dropped++;
-      return;
+      return false;
     }
     if (fresh) {
       this.seg = seg;
@@ -181,9 +193,9 @@ export class CaptureWriter {
     this.segBytes += bytes;
     this.pending.push({ seg, text });
     this.pendingBytes += bytes;
-    this.stats.contexts++;
     this.stats.lines += lines.length;
     this.schedule();
+    return true;
   }
 
   private schedule(): void {

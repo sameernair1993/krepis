@@ -1,18 +1,28 @@
 #!/usr/bin/env node
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { ScenarioName } from './drill/index.ts';
-import { analysisJson, captureFiles, formatAnalysis, groupFindings, loadCaptures, nPlusOneGroups } from './analyze.ts';
+import { analysisJson, captureFiles, formatAnalysis, groupFindings, loadCaptures } from './analyze.ts';
+import { ciFindings, compareBaseline, formatMarkdown, formatSarif, readBaseline, writeBaseline, type BaselineEntry } from './ci.ts';
 
 const HELP = `krepis — query analysis for MongoDB on Node.js
 
 Usage:
-  krepis analyze [paths...] [--json] [--rtt 1,20] [--pool 100] [--fail]
-      Read captures (default: .krepis/) and report N+1 patterns, grouped across units of work.
-      --json   machine-readable output
-      --rtt    round-trip times (ms) to project the cost onto (default 1,20)
-      --pool   maxPoolSize to assume for parallel loops (default 100)
-      --fail   exit with status 1 if any N+1 pattern is found (for test suites and CI);
-               repeated lookups (KR-P012) are informational and never fail
+  krepis analyze [paths...] [--format text|json|markdown|sarif] [--output file] [--rtt 1,20]
+                 [--pool 100] [--baseline file] [--update-baseline] [--fail]
+      Read captures (default: .krepis/) and report N+1 patterns, grouped across units of work,
+      and index findings when the app ran with observe(client, { explain: true }).
+      --format  text (default), json, markdown (a PR comment) or sarif (GitHub code scanning);
+                --json is short for --format json
+      --output  write the report to this file instead of stdout
+      --rtt     round-trip times (ms) to project the cost onto (default 1,20)
+      --pool    maxPoolSize to assume for parallel loops (default 100)
+      --baseline         compare with a baseline of known findings; --fail then fails only on
+                         findings not in it
+      --update-baseline  write the current findings to the baseline file
+                         (--baseline, default krepis-baseline.json) and exit 0
+      --fail    exit with status 1 if any N+1 pattern, index finding, operator injection signal,
+                server-side JavaScript or unbounded read is found (for test suites and CI);
+                KR-P012, KR-S003 and KR-S004 are informational and never fail
   krepis init
       Create .krepis/ and add it to .gitignore.
   krepis drill [config] [--scenario a,b] [--json] [--keep] [--image ref] [--dump-dir dir]
@@ -33,7 +43,7 @@ interface Parsed { positional: string[]; flags: Map<string, string | true> }
 function parse(argv: string[]): Parsed {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
-  const valued = new Set(['--rtt', '--pool', '--scenario', '--image', '--dump-dir']);
+  const valued = new Set(['--rtt', '--pool', '--scenario', '--image', '--dump-dir', '--format', '--output', '--baseline']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a.startsWith('--')) {
@@ -61,19 +71,76 @@ function numbers(value: string | true | undefined, name: string): number[] | und
   return list;
 }
 
+function stringFlag(args: Parsed, name: string): string | undefined {
+  const v = args.flags.get(name);
+  if (v === true) fail(`${name} needs a value`);
+  return v;
+}
+
+const FORMATS = ['text', 'json', 'markdown', 'sarif'] as const;
+const DEFAULT_BASELINE = 'krepis-baseline.json';
+
 function analyze(args: Parsed): number {
-  const known = new Set(['--json', '--rtt', '--pool', '--fail']);
+  const known = new Set(['--json', '--rtt', '--pool', '--fail', '--format', '--output', '--baseline', '--update-baseline']);
   for (const f of args.flags.keys()) if (!known.has(f)) fail(`unknown option ${f}`);
+  const format = (stringFlag(args, '--format') ?? (args.flags.has('--json') ? 'json' : 'text')) as (typeof FORMATS)[number];
+  if (!FORMATS.includes(format)) fail(`--format: expected one of ${FORMATS.join(', ')}, got "${format}"`);
+  const output = stringFlag(args, '--output');
+  const baselinePath = stringFlag(args, '--baseline');
+  const pool = numbers(args.flags.get('--pool'), '--pool');
+  const options = { rttMs: numbers(args.flags.get('--rtt'), '--rtt'), maxPoolSize: pool?.[0] };
+
   const paths = args.positional.length > 0 ? args.positional : ['.krepis'];
   const loaded = loadCaptures(captureFiles(paths));
   const groups = groupFindings(loaded.findings);
-  if (args.flags.has('--json')) {
-    process.stdout.write(JSON.stringify(analysisJson(loaded, groups), null, 2) + '\n');
-  } else {
-    const pool = numbers(args.flags.get('--pool'), '--pool');
-    process.stdout.write(formatAnalysis(loaded, groups, { rttMs: numbers(args.flags.get('--rtt'), '--rtt'), maxPoolSize: pool?.[0] }) + '\n');
+  let findings = ciFindings(loaded, options);
+
+  if (args.flags.has('--update-baseline')) {
+    const path = baselinePath ?? DEFAULT_BASELINE;
+    writeBaseline(path, findings);
+    process.stdout.write(`Wrote ${findings.length} finding${findings.length === 1 ? '' : 's'} to ${path}.\n`);
+    return 0;
   }
-  return args.flags.has('--fail') && nPlusOneGroups(groups).length > 0 ? 1 : 0;
+
+  let fixed: BaselineEntry[] = [];
+  if (baselinePath !== undefined) {
+    if (!existsSync(baselinePath)) fail(`no baseline at ${baselinePath}; create one with --update-baseline`);
+    let baseline;
+    try {
+      baseline = readBaseline(baselinePath);
+    } catch (error) {
+      fail((error as Error).message);
+    }
+    ({ findings, fixed } = compareBaseline(findings, baseline));
+  }
+  const fresh = findings.filter((f) => f.state !== 'known');
+
+  let report: string;
+  if (format === 'json') {
+    const json = analysisJson(loaded, groups) as Record<string, unknown>;
+    if (baselinePath !== undefined) {
+      json.baseline = {
+        path: baselinePath,
+        new: fresh.map(({ key, rule, title }) => ({ key, rule, title })),
+        known: findings.length - fresh.length,
+        fixed,
+      };
+    }
+    report = JSON.stringify(json, null, 2);
+  } else if (format === 'markdown') {
+    report = formatMarkdown(findings, fixed);
+  } else if (format === 'sarif') {
+    report = formatSarif(findings);
+  } else {
+    report = formatAnalysis(loaded, groups, options);
+    if (baselinePath !== undefined) {
+      report += `\n\nBaseline ${baselinePath}: ${fresh.length} new, ${findings.length - fresh.length} known, ${fixed.length} no longer seen.`;
+      for (const f of fresh) report += `\n  new  ${f.rule}  ${f.title}`;
+    }
+  }
+  if (output !== undefined) writeFileSync(output, report + '\n');
+  else process.stdout.write(report + '\n');
+  return args.flags.has('--fail') && fresh.length > 0 ? 1 : 0;
 }
 
 function init(): number {

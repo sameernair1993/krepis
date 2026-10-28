@@ -2,6 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ApolloServer } from '@apollo/server';
 import DataLoader from 'dataloader';
+import { GraphQLScalarType } from 'graphql';
 import { MongoClient, type CommandStartedEvent, type Db, type ObjectId } from 'mongodb';
 import { observe, type NPlusOneFinding, type ObserveOptions, type Observer } from '../src/index.ts';
 import { URI, seed } from './helpers.ts';
@@ -235,4 +236,31 @@ test('P11 an application frame wins over the resolver name', async () => {
   const found = newFindings(base, f);
   assert.equal(found.length, 1);
   assert.match(found[0]!.callSites[0] ?? '', /apollo\.test\.ts:\d+/);
+});
+
+test('P12 KR-S001 from GraphQL variables: a JSON-typed argument that reaches a filter', async () => {
+  const db = base.db;
+  const passThrough = (v: unknown) => v;
+  const server = new ApolloServer({
+    typeDefs: `#graphql
+      scalar JSON
+      type User { name: String! }
+      type Query { user(where: JSON!): User }`,
+    resolvers: {
+      JSON: new GraphQLScalarType({ name: 'JSON', serialize: passThrough, parseValue: passThrough }),
+      Query: { user: (_: unknown, { where }: { where: { name: unknown } }) => db.collection('users').findOne({ name: where.name }) },
+    },
+    plugins: [base.obs.apolloPlugin()],
+  });
+  await server.start();
+  try {
+    const from = base.obs.hazardFindings.length;
+    const query = 'query User($where: JSON!) { user(where: $where) { name } }';
+    await server.executeOperation({ query, variables: { where: { name: 'user0' } } });
+    await server.executeOperation({ query, variables: { where: { name: { $ne: null } } } });
+    const found = base.obs.hazardFindings.slice(from).filter((x) => x.rule === 'KR-S001');
+    assert.deepEqual(found.map((x) => [x.context, x.fields[0], x.input]), [['query User', 'name', 'variables']]);
+  } finally {
+    await server.stop();
+  }
 });

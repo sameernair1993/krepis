@@ -28,7 +28,7 @@ interface ConnectionLike { monitorCommands: boolean }
 type CommandFn = (this: ConnectionLike, ...args: unknown[]) => unknown;
 interface ConnectionPrototype { command: CommandFn; [PATCHED]?: GateMode }
 /** An observer that records commands itself, from their replies. */
-interface Recorder { record?: (args: unknown[], run: () => Promise<unknown>) => Promise<unknown> }
+interface Recorder { record?: (args: unknown[], run: () => Promise<unknown>, conn: unknown) => Promise<unknown> }
 
 const cjsRequire = createRequire(import.meta.url);
 
@@ -78,7 +78,7 @@ export function gateMonitoring(client: MongoClient): GateMode | false {
     // Commands the optimizer sends itself (prefetches, checks) are recorded the same way.
     const recorded = record
       ? function recordedCommand(this: ConnectionLike, ...a: unknown[]) {
-        return record(a, () => original.apply(this, a) as Promise<unknown>);
+        return record(a, () => original.apply(this, a) as Promise<unknown>, this);
       }
       : original;
     return ctx.optimizer

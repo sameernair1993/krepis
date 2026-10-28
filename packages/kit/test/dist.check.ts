@@ -93,5 +93,5 @@ test('emitted JavaScript carries no doc comments; declarations keep them', () =>
 
 test('dist stays inside its size budget', () => {
   const bytes = walk(DIST).reduce((n, f) => n + statSync(f).size, 0);
-  assert.ok(bytes <= 260_000, `dist is ${bytes} bytes`);
+  assert.ok(bytes <= 285_000, `dist is ${bytes} bytes`);
 });

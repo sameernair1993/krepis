@@ -1,4 +1,5 @@
 import type { CommandFailedEvent, CommandStartedEvent, CommandSucceededEvent, MongoClient } from 'mongodb';
+import type { ConnectionHolders } from '@sameernair/krepis/connections';
 import { performance } from 'node:perf_hooks';
 import { contextStorage, createContext, currentContext, type WorkContext } from './context.ts';
 import { captureCallSite, type CallSite } from './callsite.ts';
@@ -8,8 +9,12 @@ import { detectNPlusOne, type NPlusOneOptions } from './rules/nPlusOne.ts';
 import { gateMonitoring, type GateMode } from './gate.ts';
 import { readReply, type ReplyFacts } from './reply.ts';
 import { emptyStats, Optimizer, PREFETCH_COMMENT, resolveOptimize, type AutoBatchOptions, type OptimizeSetting, type OptimizeStats, type ResolvedOptimize } from './optimize.ts';
-import type { CommandRecord, Finding } from './types.ts';
+import type { CommandRecord, Finding, HazardFinding, PlanFinding } from './types.ts';
 import { apolloPlugin, type ApolloPlugin, type ApolloPluginOptions } from './apollo.ts';
+import { Measurement, type QueryCount } from './budget.ts';
+import { PlanInspector, type ExplainStats } from './plan.ts';
+import { HazardInspector, type HazardOptions } from './rules/hazards.ts';
+import { fastifyPlugin, honoMiddleware, koaMiddleware, maskedPath, WILDCARD_ROUTE, type FastifyPlugin } from './frameworks.ts';
 
 export interface ObserveOptions {
   /**
@@ -40,11 +45,28 @@ export interface ObserveOptions {
   maxRetainedDocsPerContext?: number;
   nPlusOne?: Partial<NPlusOneOptions>;
   onFinding?: (finding: Finding) => void;
+  /** Called with each plan finding (`explain: true`) when its explain returns. */
+  onPlanFinding?: (finding: PlanFinding) => void;
   /**
    * Write value-free NDJSON captures for `krepis analyze`: `true` (to `.krepis/`), a directory, or `CaptureOptions`.
    * Default off; the `KREPIS_CAPTURE` environment variable (`1` or a directory) turns it on without code changes.
    */
   capture?: CaptureSetting;
+  /**
+   * Explain each query shape the first time it is seen, and report collection scans (KR-P001), in-memory sorts
+   * (KR-P010) and `$lookup` without an index (KR-P003), with the index that would fix each. For tests and CI: it sends
+   * one extra command per shape to the server. Default off; `KREPIS_EXPLAIN=1` turns it on without code changes.
+   */
+  explain?: boolean;
+  /**
+   * Hazard rules: operator injection (KR-S001), server-side JavaScript (KR-S002), unanchored regular expressions
+   * (KR-S003), sensitive fields returned (KR-S004) and unbounded reads (KR-P006). Each inspects a query shape once, or a
+   * few times, and records field and operator names only. By default only KR-S001 and KR-S002 run; `true` (or options,
+   * or `KREPIS_HAZARDS=1`) adds the other three; `false` (or `KREPIS_HAZARDS=0`) turns all of them off.
+   */
+  hazards?: boolean | HazardOptions;
+  /** Called with each hazard finding. */
+  onHazard?: (finding: HazardFinding) => void;
 }
 
 /**
@@ -61,18 +83,21 @@ export interface Unit {
    * when this one began.
    */
   enter(): void;
+  /**
+   * Request input of this unit (a parsed body, query string, GraphQL variables), for KR-S001: an operator object in a
+   * filter that the client sent is reported from that one request. `read` is called only when a filter holds an
+   * operator object, so it can return a body parsed after the unit began. Compared in memory, never kept or captured.
+   * The framework hooks call it themselves.
+   */
+  input(source: string, read: () => unknown): void;
   end(): void;
 }
 
-interface RequestLike { method?: string; originalUrl?: string; url?: string; baseUrl?: string; route?: { path?: unknown } }
+interface RequestLike { method?: string; originalUrl?: string; url?: string; baseUrl?: string; route?: { path?: unknown }; body?: unknown; query?: unknown; params?: unknown }
 interface ResponseLike { once(event: 'finish' | 'close', listener: () => void): unknown }
 
-const ID_SEGMENT = /^(?:[0-9a-f]{24}|[0-9a-f-]{36}|\d+)$/i;
 /** Stacks captured per query shape per unit of work. */
 const SITES_PER_FINGERPRINT = 3;
-
-/** A catch-all route (`*`, Express 5 `/*splat`, `(.*)`): its pattern says nothing about the page, e.g. a CMS. */
-const WILDCARD_ROUTE = /^\/?(?:\*\w*|\(\.\*\))$/;
 
 /** Route pattern if the framework exposes a useful one; otherwise the path with id-like segments masked. */
 function routeLabel(req: RequestLike): string {
@@ -83,18 +108,21 @@ function routeLabel(req: RequestLike): string {
     const base = typeof req.baseUrl === 'string' && req.baseUrl.startsWith('/') ? req.baseUrl : '';
     return `${method} ${base}${pattern}`;
   }
-  const path = (req.originalUrl ?? req.url ?? '').split('?')[0] ?? '';
-  return `${method} ${path.split('/').map((s) => (ID_SEGMENT.test(s) ? ':id' : s)).join('/')}`;
+  return `${method} ${maskedPath(req.originalUrl ?? req.url ?? '')}`;
 }
 
 export class Observer {
   readonly findings: Finding[] = [];
+  /** Plan findings (`explain: true`): collection scans, in-memory sorts, `$lookup` without an index. */
+  readonly planFindings: PlanFinding[] = [];
+  /** Hazard findings: KR-S001 to KR-S004 and KR-P006 (see `ObserveOptions.hazards`). */
+  readonly hazardFindings: HazardFinding[] = [];
   readonly client: MongoClient;
   /** Errors raised inside Krepis's own handlers. They are counted, never thrown into the application. */
   internalErrors = 0;
   /** Stack traces captured so far (the costliest per-command step; see bench/overhead.ts). */
   callSitesCaptured = 0;
-  private readonly options: Required<Omit<ObserveOptions, 'onFinding' | 'nPlusOne' | 'autoBatch' | 'optimize' | 'capture'>> & Pick<ObserveOptions, 'onFinding' | 'nPlusOne'>;
+  private readonly options: Required<Omit<ObserveOptions, 'onFinding' | 'onPlanFinding' | 'onHazard' | 'nPlusOne' | 'autoBatch' | 'optimize' | 'capture' | 'explain' | 'hazards'>> & Pick<ObserveOptions, 'onFinding' | 'onPlanFinding' | 'onHazard' | 'nPlusOne'>;
   private readonly optimize: ResolvedOptimize | undefined;
   /** Totals across all contexts for the optimisations in `optimize`. */
   readonly optimizeStats: OptimizeStats = emptyStats();
@@ -103,11 +131,16 @@ export class Observer {
   private readonly listeners: Array<[string, (...args: never[]) => void]> = [];
   private readonly enabled: boolean;
   private readonly capture: CaptureWriter | undefined;
+  private readonly measurements = new Set<Measurement>();
+  private readonly plans: PlanInspector | undefined;
+  private readonly hazards: HazardInspector | undefined;
   /**
    * @internal Set on promise-style drivers: the gate hands this observer's in-context commands to it, and it records
    * them from the command and the reply instead of from monitoring events.
    */
-  readonly record: ((args: unknown[], run: () => Promise<unknown>) => Promise<unknown>) | undefined;
+  readonly record: ((args: unknown[], run: () => Promise<unknown>, conn: unknown) => Promise<unknown>) | undefined;
+  // KR-C006 names (see holders()): the last in-context command per pool address and connection id.
+  private holding: Map<string, string> | undefined;
 
   constructor(client: MongoClient, options: ObserveOptions = {}, enabled = true, gated: GateMode | false = false) {
     this.client = client;
@@ -119,6 +152,8 @@ export class Observer {
       maxRetainedDocsPerCommand: options.maxRetainedDocsPerCommand ?? 1000,
       maxRetainedDocsPerContext: options.maxRetainedDocsPerContext ?? 10_000,
       onFinding: options.onFinding,
+      onPlanFinding: options.onPlanFinding,
+      onHazard: options.onHazard,
       nPlusOne: options.nPlusOne,
     };
     // Optimisations live in the gated driver hook; without it there is nowhere to answer a command from.
@@ -130,8 +165,13 @@ export class Observer {
     if (!enabled) return;
     const capture = resolveCapture(options.capture);
     this.capture = capture ? new CaptureWriter(capture) : undefined;
+    const explain = options.explain ?? ['1', 'true'].includes(process.env.KREPIS_EXPLAIN ?? '');
+    if (explain) this.plans = new PlanInspector(client as never, (f) => this.report(f));
+    const env = process.env.KREPIS_HAZARDS ?? '';
+    const hazards = options.hazards ?? (['1', 'true'].includes(env) ? true : ['0', 'false'].includes(env) ? false : undefined);
+    if (hazards !== false) this.hazards = new HazardInspector(typeof hazards === 'object' ? hazards : {}, (f) => this.report(f), hazards !== undefined);
     if (gated === 'promise') {
-      this.record = (args, run) => this.recordCommand(args, run);
+      this.record = (args, run, conn) => this.recordCommand(args, run, conn);
       return;
     }
     this.on('commandStarted', (e: CommandStartedEvent) => this.started(e));
@@ -164,6 +204,25 @@ export class Observer {
   }
 
   /**
+   * Run `fn` as one unit of work and count the commands it issues, with every unit of work that begins while it runs
+   * (a request served in this process). Ignores `sampleRate`. For tests: see `expectQueries`.
+   */
+  async measure<T>(label: string, fn: () => Promise<T> | T): Promise<{ result: T; queries: QueryCount }> {
+    if (!this.enabled) throw new Error('krepis: this observer is disabled (KREPIS_DISABLED=1), so it cannot count queries');
+    const measurement = new Measurement();
+    this.measurements.add(measurement);
+    const ctx = this.newContext(label);
+    try {
+      const result = await contextStorage.run(ctx, fn);
+      this.end(ctx);
+      return { result, queries: measurement.result() };
+    } finally {
+      this.end(ctx);
+      this.measurements.delete(measurement);
+    }
+  }
+
+  /**
    * Start a unit of work for an integration that cannot wrap the work in one callback (a GraphQL server, a job
    * runner). Returns undefined when the unit is not sampled. `end()` must be called; findings are produced then.
    */
@@ -179,8 +238,27 @@ export class Observer {
       },
       run: (fn, ...args) => (contextStorage.getStore() === ctx ? fn(...args) : contextStorage.run(ctx, fn, ...args)),
       enter: () => contextStorage.enterWith(ctx),
+      input: (source, read) => this.addInput(ctx, source, read),
       end: () => this.end(ctx),
     };
+  }
+
+  /** True when request input is used (the hazard rules are on); hooks that must wrap something to read it check this. */
+  get readsInput(): boolean {
+    return this.hazards !== undefined;
+  }
+
+  /**
+   * Request input for the current unit of work, for integrations built on `run` (see `Unit.input`). Ignored outside a
+   * unit of this observer.
+   */
+  input(source: string, value: unknown): void {
+    const ctx = currentContext();
+    if (ctx?.owner === this) this.addInput(ctx, source, () => value);
+  }
+
+  private addInput(ctx: WorkContext, source: string, read: () => unknown): void {
+    if (this.hazards && !ctx.ended) (ctx.inputs ??= []).push({ source, read });
   }
 
   /** Apollo Server plugin: one unit of work per GraphQL operation, labelled `query Name`. See apollo.ts. */
@@ -188,11 +266,15 @@ export class Observer {
     return apolloPlugin(this, options);
   }
 
-  /** Connect/Express-style middleware: one context per request, analysed when the response ends. */
+  /** Connect/Express-style middleware (NestJS on Express too): one context per request, analysed when the response ends. */
   middleware(): (req: RequestLike, res: ResponseLike, next: () => void) => void {
     return (req, res, next) => {
       if (!this.sampled()) return next();
       const ctx = this.newContext(routeLabel(req));
+      // Read when needed: body parsers and the router run after this middleware.
+      this.addInput(ctx, 'body', () => req.body);
+      this.addInput(ctx, 'query', () => req.query);
+      this.addInput(ctx, 'params', () => req.params);
       let done = false;
       const finish = () => {
         if (done) return;
@@ -206,6 +288,21 @@ export class Observer {
     };
   }
 
+  /** Fastify plugin, one unit of work per request: `await app.register(observer.fastifyPlugin())`. See frameworks.ts. */
+  fastifyPlugin(): FastifyPlugin {
+    return fastifyPlugin(this);
+  }
+
+  /** Koa middleware, one unit of work per request: `app.use(observer.koaMiddleware())`, before the router. */
+  koaMiddleware(): ReturnType<typeof koaMiddleware> {
+    return koaMiddleware(this);
+  }
+
+  /** Hono middleware, one unit of work per request: `app.use(observer.honoMiddleware())`. */
+  honoMiddleware(): ReturnType<typeof honoMiddleware> {
+    return honoMiddleware(this);
+  }
+
   /** Capture counters (all zero when capture is off). */
   get captureStats(): CaptureStats {
     return this.capture?.stats ?? emptyCaptureStats();
@@ -216,9 +313,60 @@ export class Observer {
     return this.capture?.dir;
   }
 
+  /** Explain counters (all zero when `explain` is off). */
+  get explainStats(): ExplainStats {
+    return this.plans?.stats ?? { explained: 0, failed: 0 };
+  }
+
+  /**
+   * Wait for the explains started so far (`explain: true`), then write buffered capture lines. Call it before a test
+   * run exits, or the last shapes' plan findings are lost.
+   */
+  async settled(): Promise<void> {
+    await this.plans?.settled();
+    this.capture?.flush();
+  }
+
+  /** A plan or hazard finding. */
+  private report(finding: PlanFinding | HazardFinding): void {
+    try {
+      if (isPlanFinding(finding)) {
+        this.planFindings.push(finding);
+        this.options.onPlanFinding?.(finding);
+      } else {
+        this.hazardFindings.push(finding);
+        this.options.onHazard?.(finding);
+      }
+    } catch {
+      this.internalErrors++;
+    }
+    try {
+      this.capture?.recordFinding(finding);
+    } catch {
+      this.internalErrors++;
+    }
+  }
+
   /** Write buffered capture lines now (they are otherwise written within a second, and on detach and exit). */
   flush(): void {
     this.capture?.flush();
+  }
+
+  /**
+   * Names the queries holding connections, for KR-C006:
+   * `watchConnections(client, { holders: observer.holders() })`. Only commands inside a unit of
+   * work are named. Give it to one watcher: each name is handed out once.
+   */
+  holders(): ConnectionHolders {
+    const map = (this.holding ??= new Map());
+    return {
+      heldBy: (address, id) => {
+        const key = `${address}#${id}`;
+        const name = map.get(key);
+        if (name !== undefined) map.delete(key);
+        return name;
+      },
+    };
   }
 
   detach(): void {
@@ -229,6 +377,7 @@ export class Observer {
 
   private newContext(label: string): WorkContext {
     const ctx = createContext(label, this);
+    if (this.measurements.size > 0) ctx.measurements = [...this.measurements];
     if (this.optimize) {
       ctx.optimizer = new Optimizer(
         { commands: () => ctx.commands, recordServed: (name, db, cmd, returned) => this.recordServed(ctx, name, db, cmd, returned) },
@@ -271,13 +420,13 @@ export class Observer {
    * Records one in-context command from `Connection.command(ns, cmd, options, responseType)` and what it resolves
    * with. Every Krepis step is guarded: the command's result or rejection always reaches the driver untouched.
    */
-  private recordCommand(args: unknown[], run: () => Promise<unknown>): Promise<unknown> {
+  private recordCommand(args: unknown[], run: () => Promise<unknown>, conn: unknown): Promise<unknown> {
     let entry: { ctx: WorkContext; record: CommandRecord } | undefined;
     try {
       const ctx = currentContext();
       const [ns, cmd] = args as [{ db?: unknown } | undefined, Record<string, unknown> | undefined];
       const name = cmd ? Object.keys(cmd)[0] : undefined;
-      if (ctx && ctx.owner === this && name) entry = this.open(ctx, -1, name, String(ns?.db), cmd!);
+      if (ctx && ctx.owner === this && name) entry = this.open(ctx, -1, name, String(ns?.db), cmd!, conn);
     } catch {
       this.internalErrors++;
     }
@@ -305,13 +454,23 @@ export class Observer {
   private started(e: CommandStartedEvent): void {
     const ctx = currentContext();
     if (!ctx || ctx.owner !== this) return;
-    const entry = this.open(ctx, e.requestId, e.commandName, e.databaseName, e.command as Record<string, unknown>);
+    const entry = this.open(ctx, e.requestId, e.commandName, e.databaseName, e.command as Record<string, unknown>, { address: e.address, id: e.connectionId });
     if (entry) this.pending.set(e.requestId, entry);
   }
 
-  private open(ctx: WorkContext, requestId: number, commandName: string, database: string, command: Record<string, unknown>): { ctx: WorkContext; record: CommandRecord } | undefined {
+  private open(ctx: WorkContext, requestId: number, commandName: string, database: string, command: Record<string, unknown>, conn?: unknown): { ctx: WorkContext; record: CommandRecord } | undefined {
     const described = describeCommand(commandName, database, command);
     if (!described) return undefined;
+    if (this.holding && conn) {
+      // The pool's address (what pool events carry), not the socket's resolved one.
+      const c = conn as { id?: unknown; address?: unknown; authContext?: { options?: { hostAddress?: unknown } } };
+      const o = described.cursorId ? this.cursors.get(described.cursorId) : undefined;
+      if (this.holding.size >= 4096) this.holding.clear();
+      this.holding.set(
+        `${String(c.authContext?.options?.hostAddress ?? c.address)}#${String(c.id)}`,
+        `${ctx.label}: ${o ? `${o.commandName} ${o.database}.${o.collection ?? ''} ${o.fingerprint}` : `${commandName} ${database}.${described.collection ?? ''} ${described.fingerprint}`}`,
+      );
+    }
     const lookup = commandName === 'getMore' ? undefined : lookupKeys(described.filter);
     const record: CommandRecord = {
       requestId,
@@ -332,6 +491,16 @@ export class Observer {
       cursorId: described.cursorId,
       prefetch: command.comment === PREFETCH_COMMENT,
     };
+    if (this.plans && !record.prefetch) {
+      this.plans.consider({ context: ctx.label, database, collection: described.collection, commandName, command, fingerprint: described.fingerprint, shape: described.shape, callSite: record.callSite });
+    }
+    if (this.hazards) {
+      try {
+        this.hazards.command(ctx, record, command, described.filter);
+      } catch {
+        this.internalErrors++;
+      }
+    }
     return { ctx, record };
   }
 
@@ -376,6 +545,13 @@ export class Observer {
       record.returned = batch;
       this.retain(ctx, record, batch, reply.docs);
       if (openCursor) this.cursors.set(openCursor, record);
+      if (this.hazards) {
+        try {
+          this.hazards.reply(ctx, record, reply);
+        } catch {
+          this.internalErrors++;
+        }
+      }
     } else if (reply.n !== undefined) {
       record.returned = reply.n;
     }
@@ -383,6 +559,7 @@ export class Observer {
   }
 
   private sampled(): boolean {
+    if (this.measurements.size > 0) return this.enabled;
     return this.enabled && (this.options.sampleRate >= 1 || Math.random() < this.options.sampleRate);
   }
 
@@ -421,6 +598,8 @@ export class Observer {
   private end(ctx: WorkContext): void {
     if (ctx.ended) return;
     ctx.ended = true;
+    for (const m of ctx.measurements ?? []) m.collect(ctx.commands);
+    ctx.measurements = undefined;
     let findings: Finding[] = [];
     try {
       findings = detectNPlusOne(ctx, this.options.nPlusOne);
@@ -431,6 +610,12 @@ export class Observer {
     } catch {
       this.internalErrors++;
     }
+    try {
+      this.hazards?.end(ctx);
+    } catch {
+      this.internalErrors++;
+    }
+    ctx.inputs = undefined;
     try {
       this.capture?.record(ctx, findings);
     } catch {
@@ -446,6 +631,9 @@ export class Observer {
     ctx.optimizer = undefined;
   }
 }
+
+const PLAN_RULES = new Set(['KR-P001', 'KR-P010', 'KR-P003']);
+const isPlanFinding = (f: PlanFinding | HazardFinding): f is PlanFinding => PLAN_RULES.has(f.rule);
 
 export function observe(client: MongoClient, options?: ObserveOptions): Observer {
   if (process.env.KREPIS_DISABLED === '1') return new Observer(client, options, false);

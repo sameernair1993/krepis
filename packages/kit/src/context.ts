@@ -3,6 +3,18 @@ import type { Optimizer } from './optimize.ts';
 import type { CommandRecord } from './types.ts';
 
 /**
+ * Request input of a unit of work (a parsed body, query string, route parameters, GraphQL variables), read lazily
+ * because bodies are parsed after the unit begins. KR-S001 compares operator objects in filters against it, in memory.
+ */
+export interface InputSource {
+  source: string;
+  read: () => unknown;
+  /** Last value read, and the operator objects found in it. */
+  seen?: unknown;
+  ops?: Record<string, unknown>[];
+}
+
+/**
  * One unit of work (an HTTP request, a GraphQL operation, a job) whose commands are analysed
  * together. N+1 is only visible at this grain: each child query is individually perfect.
  */
@@ -25,6 +37,10 @@ export interface WorkContext {
    * an `enterWith` reached, a fire-and-forget query) is attributed to the parent instead of being lost.
    */
   parent: WorkContext | undefined;
+  /** Measurements running when this unit began (`Observer.measure`); its commands are handed to each when it ends. */
+  measurements?: ReadonlyArray<{ collect(commands: readonly CommandRecord[]): void }>;
+  /** Request input, when an integration recorded it and the hazard rules are on. Dropped when the unit ends. */
+  inputs?: InputSource[];
 }
 
 export const contextStorage = new AsyncLocalStorage<WorkContext>();

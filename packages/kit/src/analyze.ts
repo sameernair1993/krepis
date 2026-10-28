@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { CAPTURE_FILE, CAPTURE_VERSION } from './capture.ts';
 import { formatFinding, projectedExtraMs, type ReportOptions } from './report.ts';
-import type { Finding, RepeatedLookupFinding } from './types.ts';
+import type { Finding, HazardFinding, PlanFinding, RepeatedLookupFinding } from './types.ts';
 
 /** Offline reading of NDJSON captures (see capture.ts) and grouping of findings across units of work. */
 
@@ -24,6 +24,10 @@ export interface LoadedCaptures {
   malformed: number;
   shapes: Map<string, Shape>;
   findings: Finding[];
+  /** Plan findings (KR-P001, KR-P010, KR-P003), from captures written with `explain` on. */
+  plans: PlanFinding[];
+  /** Hazard findings (KR-S001 to KR-S004, KR-P006). */
+  hazards: HazardFinding[];
 }
 
 /** Capture files under the given paths: directories are listed (non-recursively), files are taken as given. */
@@ -47,7 +51,7 @@ export function captureFiles(paths: string[]): string[] {
 }
 
 export function loadCaptures(files: string[]): LoadedCaptures {
-  const result: LoadedCaptures = { files: [], skipped: [], contexts: 0, commands: 0, served: 0, malformed: 0, shapes: new Map(), findings: [] };
+  const result: LoadedCaptures = { files: [], skipped: [], contexts: 0, commands: 0, served: 0, malformed: 0, shapes: new Map(), findings: [], plans: [], hazards: [] };
   for (const file of files) {
     let text: string;
     try {
@@ -93,11 +97,20 @@ export function loadCaptures(files: string[]): LoadedCaptures {
       } else if (rec.t === 'finding' && (rec.rule === 'KR-P002' || rec.rule === 'KR-P012')) {
         const { t: _t, at: _at, ...finding } = rec;
         result.findings.push(upgradeFinding(finding));
+      } else if (rec.t === 'finding' && PLAN_RULES.has(rec.rule as string)) {
+        const { t: _t, at: _at, ...finding } = rec;
+        result.plans.push(finding as unknown as PlanFinding);
+      } else if (rec.t === 'finding' && HAZARD_RULES.has(rec.rule as string)) {
+        const { t: _t, at: _at, ...finding } = rec;
+        result.hazards.push(finding as unknown as HazardFinding);
       }
     }
   }
   return result;
 }
+
+const PLAN_RULES = new Set(['KR-P001', 'KR-P010', 'KR-P003']);
+const HAZARD_RULES = new Set(['KR-S001', 'KR-S002', 'KR-S003', 'KR-S004', 'KR-P006']);
 
 /**
  * Captures written by earlier versions hold KR-P002 findings without a data link ('likely' or 'pattern'
@@ -167,6 +180,62 @@ function cost(g: FindingGroup): number {
   return g.occurrences * projectedExtraMs(g.representative, 1);
 }
 
+export interface PlanGroup {
+  rule: PlanFinding['rule'];
+  key: string;
+  /** Processes (observers) that reported it: each reports a shape once. */
+  occurrences: number;
+  labels: Record<string, number>;
+  representative: PlanFinding;
+}
+
+/** Plan findings for the same rule, shape and joined collection → one group. */
+export function groupPlanFindings(plans: readonly PlanFinding[]): PlanGroup[] {
+  const groups = new Map<string, PlanGroup>();
+  for (const f of plans) {
+    const key = [f.rule, f.fingerprint, f.lookup?.from ?? '', f.lookup?.foreignField ?? ''].join('|');
+    let g = groups.get(key);
+    if (!g) {
+      g = { rule: f.rule, key, occurrences: 0, labels: {}, representative: f };
+      groups.set(key, g);
+    }
+    g.occurrences++;
+    g.labels[f.context] = (g.labels[f.context] ?? 0) + 1;
+  }
+  const order = { 'KR-P001': 0, 'KR-P003': 1, 'KR-P010': 2 };
+  return [...groups.values()].sort((a, b) => order[a.rule] - order[b.rule] || a.representative.namespace.localeCompare(b.representative.namespace) || a.key.localeCompare(b.key));
+}
+
+export interface HazardGroup {
+  rule: HazardFinding['rule'];
+  key: string;
+  /** Processes (observers) that reported it: each reports a shape once. */
+  occurrences: number;
+  labels: Record<string, number>;
+  representative: HazardFinding;
+}
+
+/** Hazards that fail `krepis analyze --fail`; KR-S003 and KR-S004 are informational. */
+export const FAILING_HAZARDS = new Set<HazardFinding['rule']>(['KR-S001', 'KR-S002', 'KR-P006']);
+
+/** Hazard findings for the same rule, shape and fields → one group; failing rules first. */
+export function groupHazardFindings(hazards: readonly HazardFinding[]): HazardGroup[] {
+  const groups = new Map<string, HazardGroup>();
+  for (const f of hazards) {
+    const key = [f.rule, f.fingerprint, f.fields.join(','), f.rule === 'KR-S001' ? f.callSites[0] ?? '' : ''].join('|');
+    let g = groups.get(key);
+    if (!g) {
+      g = { rule: f.rule, key, occurrences: 0, labels: {}, representative: f };
+      groups.set(key, g);
+    }
+    g.occurrences++;
+    g.labels[f.context] = (g.labels[f.context] ?? 0) + 1;
+    if ((f.returned ?? 0) > (g.representative.returned ?? 0)) g.representative = f;
+  }
+  const order = { 'KR-S001': 0, 'KR-S002': 1, 'KR-P006': 2, 'KR-S003': 3, 'KR-S004': 4 };
+  return [...groups.values()].sort((a, b) => order[a.rule] - order[b.rule] || a.representative.namespace.localeCompare(b.representative.namespace) || a.key.localeCompare(b.key));
+}
+
 export interface AnalyzeOptions extends ReportOptions {
   /** Labels listed per group. Default 3. */
   topLabels?: number;
@@ -179,14 +248,21 @@ export function formatAnalysis(loaded: LoadedCaptures, groups: FindingGroup[], o
     (loaded.served > 0 ? ` (${n(loaded.served)} answered by optimize)` : '') + '.');
   for (const s of loaded.skipped) out.push(`  skipped ${s.file}: ${s.reason}`);
   if (loaded.malformed > 0) out.push(`  ${n(loaded.malformed)} unreadable line(s) ignored (a process stopped mid-write).`);
-  if (loaded.contexts === 0 && groups.length === 0) {
+  if (loaded.contexts === 0 && groups.length === 0 && loaded.plans.length === 0 && loaded.hazards.length === 0) {
     out.push('No units of work captured. Is observe(client, { capture: true }) running, and does work run inside a context?');
     return out.join('\n');
   }
   const nPlusOne = nPlusOneGroups(groups);
   const repeated = groups.filter((g) => g.rule === 'KR-P012');
+  const plans = groupPlanFindings(loaded.plans);
+  const hazards = groupHazardFindings(loaded.hazards);
+  const failingHazards = hazards.filter((g) => FAILING_HAZARDS.has(g.rule)).length;
   const units = (gs: FindingGroup[]) => gs.reduce((s, g) => s + g.occurrences, 0);
   out.push(nPlusOne.length === 0 ? 'No N+1 patterns found.' : `${n(nPlusOne.length)} N+1 pattern(s), found in ${n(units(nPlusOne))} units of work.`);
+  if (plans.length > 0) out.push(`${n(plans.length)} index finding(s): collection scans, in-memory sorts or unindexed $lookup.`);
+  if (hazards.length > 0) {
+    out.push(`${n(hazards.length)} hazard(s): ${n(failingHazards)} injection, server-side JavaScript or unbounded read; ${n(hazards.length - failingHazards)} info.`);
+  }
   if (repeated.length > 0) {
     out.push(`${n(repeated.length)} repeated-lookup pattern(s) (info, not N+1), found in ${n(units(repeated))} units of work.`);
   }
@@ -202,6 +278,28 @@ export function formatAnalysis(loaded: LoadedCaptures, groups: FindingGroup[], o
     out.push(formatFinding(g.representative, options));
   });
   section(nPlusOne, '');
+  if (plans.length > 0) {
+    out.push('');
+    out.push('Index findings (from the query planner, once per query shape):');
+    plans.forEach((g, i) => {
+      const labels = Object.keys(g.labels).sort();
+      const shown = labels.slice(0, top).join(', ') + (labels.length > top ? `, and ${labels.length - top} more` : '');
+      out.push('');
+      out.push(`[I${i + 1}] first seen in ${shown}`);
+      out.push(formatFinding(g.representative, options));
+    });
+  }
+  if (hazards.length > 0) {
+    out.push('');
+    out.push('Hazards (once per query shape; field and operator names only):');
+    hazards.forEach((g, i) => {
+      const labels = Object.keys(g.labels).sort();
+      const shown = labels.slice(0, top).join(', ') + (labels.length > top ? `, and ${labels.length - top} more` : '');
+      out.push('');
+      out.push(`[H${i + 1}] first seen in ${shown}`);
+      out.push(formatFinding(g.representative, options));
+    });
+  }
   if (repeated.length > 0) {
     out.push('');
     out.push('Repeated lookups (no earlier result supplies the values; deduplication or loader material, not N+1):');
@@ -212,6 +310,8 @@ export function formatAnalysis(loaded: LoadedCaptures, groups: FindingGroup[], o
 
 /** JSON form of an analysis: stable field names, for scripts and CI. */
 export function analysisJson(loaded: LoadedCaptures, groups: FindingGroup[]): unknown {
+  const plans = groupPlanFindings(loaded.plans);
+  const hazards = groupHazardFindings(loaded.hazards);
   return {
     summary: {
       files: loaded.files.length,
@@ -222,7 +322,11 @@ export function analysisJson(loaded: LoadedCaptures, groups: FindingGroup[]): un
       malformed: loaded.malformed,
       patterns: nPlusOneGroups(groups).length,
       repeatedLookups: groups.length - nPlusOneGroups(groups).length,
+      indexFindings: plans.length,
+      hazards: hazards.length,
     },
     groups,
+    plans,
+    hazards,
   };
 }

@@ -287,11 +287,40 @@ observe(client, { capture: { dir: 'tmp/krepis', segmentBytes: 16 << 20, retentio
 krepis init                          # create .krepis/ and add it to .gitignore
 krepis analyze                       # N+1 patterns grouped across units of work, with the fix; repeated lookups listed apart
 krepis analyze .krepis --json        # for scripts; --rtt 1,20,50 to project costs; --fail exits 1 on any N+1 pattern
+krepis analyze --format markdown     # or sarif; --output file writes it there
+krepis analyze --update-baseline     # record today's findings in krepis-baseline.json
+krepis analyze --baseline krepis-baseline.json --fail   # fail only on findings not in the baseline
 ```
 
 Each finding is grouped with the same pattern from other requests (same query shape, parent and call site), so the report says how many units of work and which routes hit it.
 
 Findings are a union on `rule`: `KR-P002` (`NPlusOneFinding`, severity `warn`, with `confidence: 'strong' | 'derived'` and the `parent` that supplies the values) and `KR-P012` (`RepeatedLookupFinding`, severity `info`, no parent: repeats that are not N+1). `onFinding` receives both; `formatFinding(f)` prints either. `--fail` and `analysisJson().summary.patterns` count KR-P002 only; `summary.repeatedLookups` counts the rest. `observer.captureStats` counts contexts, lines, bytes, segments, `dropped` (buffer full) and `errors` (failed writes); `observer.flush()` writes buffered lines now. Format: [Architecture](ARCHITECTURE.md#capture-format).
+
+The same reports from code: `ciFindings(loadCaptures(captureFiles(['.krepis'])))` lists what `--fail` acts on, each with a stable `key`; `compareBaseline`, `readBaseline` and `writeBaseline` handle baselines, and `formatMarkdown` and `formatSarif` render them.
+
+Query budgets:
+
+```ts
+import { expectQueries, KrepisQueryBudgetError } from '@sameernair/krepis-kit';
+await expectQueries(observer, { max: 3 }, () => request(app).get('/posts'));    // throws KrepisQueryBudgetError
+const { result, queries } = await observer.measure('GET /posts', () => request(app).get('/posts'));
+// queries: { commands, roundTrips, units, shapes: [{ namespace, command, shape, count, callSite }] }
+```
+
+Every unit of work that begins while the block runs is counted, so run one measurement at a time per observer. `commands` counts what the application issued (a cursor's `getMore`s belong to it); `roundTrips` what reached the server after `optimize`.
+
+Opt-in rules ([Rules](RULES.md)):
+
+```ts
+observe(client, { explain: true, onPlanFinding: (f) => console.warn(formatFinding(f)) });   // KR-P001, P010, P003
+observe(client, { hazards: true, onHazard: (f) => console.warn(formatFinding(f)) });       // KR-S001–S004, KR-P006 (S001, S002 run by default)
+observe(client, { hazards: { sensitiveFields: /passw|secret|token|ssn/i, unboundedReadThreshold: 5000 } });
+await observer.settled();   // explains still running, then buffered capture lines
+```
+
+Findings are also kept on `observer.planFindings` and `observer.hazardFindings`; `observer.explainStats` counts explains sent and refused. `KREPIS_EXPLAIN=1` and `KREPIS_HAZARDS=1` turn them on without code changes. KR-S001 and KR-S002 run without `hazards: true`; `hazards: false` or `KREPIS_HAZARDS=0` turns them off.
+
+`observer.holders()` names the queries holding connections for the connection watcher's KR-C006: `watchConnections(client, { holders: observer.holders() })` (see Connections → Checkout waits). Only commands inside a unit of work are named. Give it to one watcher.
 
 Units of work from frameworks:
 
@@ -299,9 +328,16 @@ Units of work from frameworks:
 app.use(observer.middleware());                                        // Express/Connect: one unit per request, labelled 'GET /orders/:id'
 new ApolloServer({ schema, plugins: [observer.apolloPlugin()] });      // one unit per GraphQL operation, labelled 'query Orders'
 await observer.run('job sync-users', () => syncUsers());               // anything with one callback
+await fastify.register(observer.fastifyPlugin());                      // Fastify
+koa.use(observer.koaMiddleware());                                     // Koa, before @koa/router
+hono.use(observer.honoMiddleware());                                   // Hono
 const unit = observer.begin('job sync-users');                         // hooks that cannot wrap a callback; undefined when not sampled
 unit?.enter(); /* … */ unit?.end();
+unit?.input('body', () => message.payload);                            // request input for KR-S001; read only when a filter holds an operator
+observer.input('body', req.body);                                      // the same, for the current unit (inside `run`)
 ```
+
+The hooks record the request's input themselves: `body`, `query` and `params` (Express, Fastify, Koa), the JSON body (Hono, as `c.req.json()` returns it) and `variables` (Apollo). It is compared in memory when a filter field holds an operator object, and is never kept or captured; a KR-S001 finding says only which part it came from (`finding.input`).
 
 The middleware labels a unit by method and route pattern, read when the response finishes. If the route is a catch-all (`*`, `(.*)`, as in CMSs that resolve pages themselves) or the router's `baseUrl` is not a path, it falls back to the request path with id-like segments masked.
 

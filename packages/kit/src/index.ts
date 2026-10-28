@@ -1,8 +1,13 @@
 export { observe, Observer, type ObserveOptions, type Unit } from './collector.ts';
+export type { FastifyPlugin } from './frameworks.ts';
+export { expectQueries, formatQueryCount, KrepisQueryBudgetError, type QueryBudget, type QueryCount, type QueryShapeCount } from './budget.ts';
 export { apolloPlugin, type ApolloPlugin, type ApolloPluginOptions } from './apollo.ts';
 export type { AutoBatchOptions, MismatchVerdict, OptimizeMismatch, OptimizeOptions, OptimizeSetting, OptimizeStats } from './optimize.ts';
-export { formatFinding, formatNPlusOne, formatRepeatedLookup, projectedExtraMs, type ReportOptions } from './report.ts';
+export { formatFinding, formatHazardFinding, formatNPlusOne, formatPlanFinding, formatRepeatedLookup, projectedExtraMs, type ReportOptions } from './report.ts';
 export { describeCommand, lookupKeys, pointLookup, shapeFilter, valueKey, type LookupKeys } from './fingerprint.ts';
-export type { Confidence, Finding, NPlusOneFinding, RepeatedLookupFinding, RepeatEvidence, CommandRecord } from './types.ts';
+export type { Confidence, Finding, HazardFinding, IndexKeys, NPlusOneFinding, PlanFinding, RepeatedLookupFinding, RepeatEvidence, CommandRecord } from './types.ts';
+export type { HazardOptions } from './rules/hazards.ts';
+export { suggestIndex, summarizePlan, type ExplainStats, type PlanSummary } from './plan.ts';
 export { CAPTURE_VERSION, type CaptureOptions, type CaptureSetting, type CaptureStats } from './capture.ts';
-export { analysisJson, captureFiles, formatAnalysis, groupFindings, loadCaptures, nPlusOneGroups, type AnalyzeOptions, type FindingGroup, type LoadedCaptures } from './analyze.ts';
+export { analysisJson, captureFiles, FAILING_HAZARDS, formatAnalysis, groupFindings, groupHazardFindings, groupPlanFindings, loadCaptures, nPlusOneGroups, type AnalyzeOptions, type FindingGroup, type HazardGroup, type LoadedCaptures, type PlanGroup } from './analyze.ts';
+export { BASELINE_VERSION, ciFindings, compareBaseline, formatMarkdown, formatSarif, readBaseline, writeBaseline, type Baseline, type BaselineEntry, type CiFinding } from './ci.ts';
