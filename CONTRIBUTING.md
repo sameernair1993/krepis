@@ -80,7 +80,3 @@ Follow the checklist in [Rules → Adding a rule](docs/RULES.md#adding-a-rule).
 
   A prerelease goes to the dist-tag named by its first identifier (`alpha`). A failed publish leaves no tag, so the next push to main retries it. A manual run is a dry run unless unticked. npm provenance is added once the repository is public.
 - Native binaries, if any, are built only in CI.
-
-## Code of conduct
-
-To be added before the repository is public.
