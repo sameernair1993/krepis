@@ -1,8 +1,8 @@
 name: CI
 
-# Pull requests run here directly. Pushes to main run this through release.yml, which releases after it passes.
+# Called, not triggered: pull requests run it through pr.yml and pushes to main through release.yml, which releases
+# after it passes. Both call it as job `ci`, so the check is `ci / test`, the name the main branch ruleset requires.
 on:
-  pull_request:
   workflow_call:
 
 permissions:

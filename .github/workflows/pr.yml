@@ -1,0 +1,13 @@
+name: Pull request
+
+# Runs CI through the same `ci` job name that release.yml uses, so pull requests report the `ci / test` check the
+# main branch ruleset requires. Run directly, ci.yml would report it as `test`.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
