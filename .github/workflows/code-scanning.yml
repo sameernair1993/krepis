@@ -19,7 +19,8 @@ concurrency:
 jobs:
   sarif:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # mongod 8.0 refuses to start on Linux 6.19+ (SERVER-121912, fix tracked in SERVER-125742); 22.04's kernel is older.
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -42,6 +43,7 @@ jobs:
       # ECONNREFUSED.
       - name: Start MongoDB
         run: |
+          uname -r
           docker run -d --name krepis-mongo -p 27018:27017 mongo:8.0
           for i in $(seq 1 90); do
             docker exec krepis-mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' 2>/dev/null | grep -q 1 && exit 0

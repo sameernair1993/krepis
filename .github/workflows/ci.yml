@@ -14,7 +14,8 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # mongod 8.0 refuses to start on Linux 6.19+ (SERVER-121912, fix tracked in SERVER-125742); 22.04's kernel is older.
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
       KREPIS_TEST_URI: mongodb://127.0.0.1:27018/?directConnection=true
@@ -37,6 +38,7 @@ jobs:
       # The suite's replica set (CONTRIBUTING → Testing rules) and the auth + rate-limited server for the connection tests.
       - name: Start MongoDB
         run: |
+          uname -r
           docker run -d --name krepis-mongo -p 27018:27018 mongo:8.0 \
             --replSet rs0 --port 27018 --setParameter enableTestCommands=1
           docker run -d --name krepis-mongo-auth -p 27019:27017 \
