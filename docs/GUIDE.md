@@ -355,7 +355,7 @@ A finding is identified by its rule, collection, query shape and (for N+1) the p
     sarif_file: krepis.sarif
 ```
 
-The upload needs the `security-events: write` permission. A finding with no recorded call site, or one outside the directory the command runs in, is written without a location, and GitHub code scanning does not show results without one; the text and markdown reports still list it. Run the command from the repository root.
+The upload needs the `security-events: write` permission. Each result is located at the first frame of its call site that is inside the directory the command runs in and outside `node_modules`. A finding with no such frame is written without a location, and GitHub code scanning does not show results without one; the text and markdown reports still list it. Run the command from the repository root.
 
 ### Production sampling
 

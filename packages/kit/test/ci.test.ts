@@ -123,6 +123,16 @@ test('C4 SARIF: rules with descriptions, a repository-relative location, baselin
     r.locations[0].physicalLocation.artifactLocation.uri === 'src/repo.ts'));
   const outside = JSON.parse(formatSarif(absolute, { root: join(work, 'elsewhere') }));
   assert.ok(outside.runs[0].results.every((r: { locations?: unknown }) => r.locations === undefined));
+  // A chain that starts in a library (outside the root, or under node_modules) is located at its first app frame.
+  const lib = join(work, '..', 'lib', 'dist', 'collection.js') + ':166';
+  for (const first of [lib, 'node_modules/some-orm/query.js:9']) {
+    const chained = a.map((f) => ({ ...f, callSite: `${first} ← src/detect/repo.ts:20 ← src/main.ts:3` }));
+    const located = JSON.parse(formatSarif(chained, { root: work }));
+    for (const r of located.runs[0].results) {
+      assert.equal(r.locations[0].physicalLocation.artifactLocation.uri, 'src/detect/repo.ts', first);
+      assert.equal(r.locations[0].physicalLocation.region.startLine, 20);
+    }
+  }
 });
 
 function cli(...args: string[]) {
