@@ -174,19 +174,24 @@ const RULE_INFO: Record<CiFinding['rule'], { name: string; description: string; 
 };
 
 /**
- * `src/a.ts:12 ← src/b.ts:5` → `{ uri: 'src/a.ts', line: 12 }`. An absolute path is made relative to `root`; one
- * outside it has no location.
+ * `src/a.ts:12 ← src/b.ts:5` → `{ uri: 'src/a.ts', line: 12 }`: the first frame inside `root` and outside
+ * `node_modules`. An absolute path is made relative to `root`. A chain can start in a library the call-site filter
+ * kept (a workspace package resolved to its real path, say); its later frames are still the application's.
  */
 function location(callSite: string | undefined, root: string): { uri: string; line: number } | undefined {
-  const first = callSite?.split(' ← ')[0];
-  const m = first ? /^(.*):(\d+)$/.exec(first) : null;
-  if (!m) return undefined;
-  let file = m[1]!;
-  if (isAbsolute(file)) {
-    file = relative(root, file);
-    if (file.startsWith('..') || isAbsolute(file)) return undefined;
+  for (const frame of callSite?.split(' ← ') ?? []) {
+    const m = /^(.*):(\d+)$/.exec(frame);
+    if (!m) continue;
+    let file = m[1]!;
+    if (isAbsolute(file)) {
+      file = relative(root, file);
+      if (file.startsWith('..') || isAbsolute(file)) continue;
+    }
+    file = file.split(sep).join('/');
+    if (file.split('/').includes('node_modules')) continue;
+    return { uri: file, line: Number(m[2]) };
   }
-  return { uri: file.split(sep).join('/'), line: Number(m[2]) };
+  return undefined;
 }
 
 /**

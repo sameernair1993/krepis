@@ -1,0 +1,88 @@
+name: Code scanning
+
+# Uploads krepis's own SARIF to GitHub code scanning: the end-to-end check that GitHub accepts the file and shows each
+# result at a file and line. The capture comes from packages/kit/examples/n-plus-one.ts, a deliberate N+1, so the
+# alert it raises is expected. Pull requests from forks are skipped: their token cannot write security events.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-scanning-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sarif:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # mongod 8.0 refuses to start on Linux 6.19+ (SERVER-121912, fix tracked in SERVER-125742); 22.04's kernel is older.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Fails here, with the server's log, if mongod is not answering: otherwise the capture step reports only
+      # ECONNREFUSED.
+      - name: Start MongoDB
+        run: |
+          uname -r
+          docker run -d --name krepis-mongo -p 27018:27017 mongo:8.0
+          for i in $(seq 1 90); do
+            docker exec krepis-mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' 2>/dev/null | grep -q 1 && exit 0
+            sleep 1
+          done
+          echo 'mongod did not answer within 90 s'
+          docker ps -a
+          docker logs krepis-mongo 2>&1 | tail -50
+          exit 1
+
+      - name: Check the port from the runner
+        run: |
+          for i in $(seq 1 30); do
+            (exec 3<>/dev/tcp/127.0.0.1/27018) 2>/dev/null && exit 0
+            sleep 1
+          done
+          echo '127.0.0.1:27018 refused for 30 s'
+          docker ps -a
+          docker port krepis-mongo
+          exit 1
+
+      # From the repository root, so capture call sites and SARIF paths are relative to it.
+      - name: Capture the example
+        env:
+          KREPIS_CAPTURE: '1'
+        run: node --conditions=krepis-source packages/kit/examples/n-plus-one.ts
+
+      - name: Write SARIF
+        run: node --conditions=krepis-source packages/kit/src/cli.ts analyze --format sarif --output krepis.sarif
+
+      # Code scanning drops results without a location, so a missing one would pass the upload unseen.
+      - name: Check every result has a location
+        run: |
+          jq -e '[.runs[].results[]] | length > 0' krepis.sarif >/dev/null || { echo 'no results in krepis.sarif'; exit 1; }
+          jq -e '[.runs[].results[] | select(.locations == null)] | length == 0' krepis.sarif >/dev/null \
+            || { echo 'results without a location:'; jq '[.runs[].results[] | select(.locations == null) | .ruleId]' krepis.sarif; exit 1; }
+
+      # Waits for GitHub to process the file and fails if it is rejected.
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: krepis.sarif
+          category: krepis
