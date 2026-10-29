@@ -38,13 +38,30 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Fails here, with the server's log, if mongod is not answering: otherwise the capture step reports only
+      # ECONNREFUSED.
       - name: Start MongoDB
         run: |
-          docker run -d --name krepis-mongo -p 27018:27018 mongo:8.0 --port 27018
-          for i in $(seq 1 60); do
-            docker exec krepis-mongo mongosh --port 27018 --quiet --eval 'db.runCommand({ ping: 1 })' >/dev/null 2>&1 && break
+          docker run -d --name krepis-mongo -p 27018:27017 mongo:8.0
+          for i in $(seq 1 90); do
+            docker exec krepis-mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' 2>/dev/null | grep -q 1 && exit 0
             sleep 1
           done
+          echo 'mongod did not answer within 90 s'
+          docker ps -a
+          docker logs krepis-mongo 2>&1 | tail -50
+          exit 1
+
+      - name: Check the port from the runner
+        run: |
+          for i in $(seq 1 30); do
+            (exec 3<>/dev/tcp/127.0.0.1/27018) 2>/dev/null && exit 0
+            sleep 1
+          done
+          echo '127.0.0.1:27018 refused for 30 s'
+          docker ps -a
+          docker port krepis-mongo
+          exit 1
 
       # From the repository root, so capture call sites and SARIF paths are relative to it.
       - name: Capture the example
